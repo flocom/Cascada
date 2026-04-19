@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0EA5E9"/>
+      <stop offset="100%" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <linearGradient id="bar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#E0F2FE" stop-opacity="1"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="5"/>
+      <feOffset dx="0" dy="5"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.25"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <!-- macOS safe zone: rounded square in 824x824 area centered in 1024 canvas -->
+  <g transform="translate(100 100) scale(0.805)">
+    <rect width="1024" height="1024" rx="220" ry="220" fill="url(#bg)"/>
+    <g filter="url(#shadow)">
+      <rect x="130" y="290" width="520" height="96" rx="48" fill="url(#bar)" opacity="0.75"/>
+      <rect x="230" y="464" width="520" height="96" rx="48" fill="url(#bar)" opacity="0.88"/>
+      <rect x="330" y="638" width="520" height="96" rx="48" fill="url(#bar)"/>
+    </g>
+  </g>
+</svg>
