@@ -22,10 +22,24 @@ const PLATFORMS: &[(Platform, &str)] = &[(Platform::MT4, "MT4"), (Platform::MT5,
 
 pub fn spawn_discovery(app: Arc<AppState>) {
     tokio::spawn(async move {
+        // Resolve the list of `Common/Files` parents **once** at startup.
+        // Walking Wine/Bottles/CrossOver and `~/Library/Containers/*` on every
+        // tick was re-triggering macOS Sequoia's TCC "access data from other
+        // apps" prompt in a loop. Now we do the expensive cross-container walk
+        // a single time; the 3 s discovery tick only reads the already-resolved
+        // `Common/Files/Cascada/<MT?>/` subtree (same sandbox scope, no prompt).
+        // New installs mid-session: user can re-run "Auto-install EA" which
+        // goes through `install_mt_ea`, or simply restart the app.
+        let commons: Arc<[PathBuf]> = Arc::from(
+            tokio::task::spawn_blocking(mt_common_dirs)
+                .await
+                .unwrap_or_default(),
+        );
         let mut tick = interval(Duration::from_secs(3));
         loop {
             tick.tick().await;
-            let logins = tokio::task::spawn_blocking(scan_all)
+            let commons = Arc::clone(&commons);
+            let logins = tokio::task::spawn_blocking(move || scan_commons(&commons))
                 .await
                 .unwrap_or_default();
             for (platform, login, dir) in logins {
@@ -42,11 +56,11 @@ pub fn spawn_discovery(app: Arc<AppState>) {
 }
 
 /// Walk every `<Common>/Files/Cascada/<MT?>/<login>/` folder that contains an
-/// `events.jsonl`. Returns `(platform, login, dir)` triples.
-fn scan_all() -> Vec<(Platform, String, PathBuf)> {
+/// `events.jsonl`. Returns `(platform, login, dir)` triples. Uses the
+/// pre-resolved `commons` list so we don't re-scan cross-app containers.
+fn scan_commons(commons: &[PathBuf]) -> Vec<(Platform, String, PathBuf)> {
     let mut out: Vec<(Platform, String, PathBuf)> = Vec::new();
-    let commons = mt_common_dirs();
-    for common in &commons {
+    for common in commons {
         for (platform, sub) in PLATFORMS {
             let root = common.join("Cascada").join(sub);
             let Ok(rd) = std::fs::read_dir(&root) else { continue };

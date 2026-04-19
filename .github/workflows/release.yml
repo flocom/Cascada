@@ -72,11 +72,17 @@ jobs:
 
             Pick the installer for your platform below.
 
-            - **macOS** — `Cascada_x.y.z_universal.dmg` (Intel + Apple Silicon)
-            - **Windows** — `Cascada_x.y.z_x64-setup.exe` or `.msi`
-            - **Linux** — `.AppImage` (portable) or `.deb`
+            - **macOS** — `Cascada_*_universal.dmg` (Intel + Apple Silicon)
+            - **Windows** — `Cascada_*_x64-setup.exe` or `.msi`
+            - **Linux** — `.AppImage` (portable), `.deb` (Debian/Ubuntu) or `.rpm` (Fedora/openSUSE)
 
-            > First launch on macOS / Windows may require right-click → Open (unsigned build).
+            ### First-launch guide (unsigned build)
+
+            - **macOS** → right-click the app → *Open* → confirm. If Gatekeeper blocks: `xattr -d com.apple.quarantine /Applications/Cascada.app`. Grant **Full Disk Access** once to silence the "access data from other apps" prompt.
+            - **Windows** → SmartScreen: *More info* → *Run anyway*.
+            - **Linux** AppImage → `chmod +x Cascada_*.AppImage && ./Cascada_*.AppImage`.
+
+            Full install walk-through: see the [README](https://github.com/flocom/Cascada#-running-an-unsigned-build).
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
