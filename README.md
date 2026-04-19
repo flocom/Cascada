@@ -13,7 +13,7 @@
   <a href="https://github.com/flocom/Cascada/releases/latest"><img alt="Download" src="https://img.shields.io/github/v/release/flocom/Cascada?style=for-the-badge&label=Download&color=0EA5E9"></a>
   <a href="https://github.com/flocom/Cascada/actions/workflows/release.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/flocom/Cascada/release.yml?style=for-the-badge&label=build"></a>
   <img alt="Platforms" src="https://img.shields.io/badge/macOS%20%7C%20Windows%20%7C%20Linux-grey?style=for-the-badge">
-  <img alt="License" src="https://img.shields.io/badge/License-MIT-10B981?style=for-the-badge">
+  <img alt="License" src="https://img.shields.io/badge/License-PolyForm%20NC%201.0.0-10B981?style=for-the-badge">
 </p>
 
 <p align="center">
@@ -196,7 +196,7 @@ Copy-trading infrastructure shouldn't be a black box. If it routes your orders, 
 
 ## 📄 License
 
-MIT — see [LICENSE](LICENSE).
+**[PolyForm Noncommercial 1.0.0](LICENSE)** — free for personal, research, and noncommercial use. Forking, modifying and sharing is allowed for noncommercial purposes. Commercial use (selling the software, using it to run a trading business, embedding it in a paid product, prop-firm deployments…) requires a separate commercial license — [open an issue](https://github.com/flocom/Cascada/issues) or contact the author.
 
 ---
 
