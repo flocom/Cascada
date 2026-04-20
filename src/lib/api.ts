@@ -132,6 +132,8 @@ export interface Trade {
   opened_at: number;
   closed_at: number | null;
   profit: number | null;
+  /** Broker-reported pip size. 0/undefined on pre-v0.1.6 EAs. */
+  pip_size?: number;
 }
 
 export interface LogEntry {

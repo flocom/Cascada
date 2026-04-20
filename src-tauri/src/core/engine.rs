@@ -74,9 +74,15 @@ impl CopyEngine {
             // (user-provided pips × pip_size) so the slave's stop sits at the
             // expected absolute price despite broker quote drift. Match by
             // master-side ticker (case-insensitive); first match wins.
+            // Prefer the broker-provided pip size rolled in with the trade
+            // event — it's the only reliable value for indices, crypto and
+            // exotic suffixed tickers where the name-based heuristic guesses
+            // 0.0001 by default (and turns a legitimate −0.22-pip offset into
+            // an invisible −0.000022 price shift).
+            let pip = effective_pip_size(&t);
             let quote_offset: f64 = rule.quote_offsets.iter()
                 .find(|o| o.symbol.eq_ignore_ascii_case(&t.symbol))
-                .map(|o| o.pips * pip_size(&t.symbol))
+                .map(|o| o.pips * pip)
                 .unwrap_or(0.0);
 
             let (sl, tp) = override_sl_tp(&rule, t, side, quote_offset);
@@ -247,7 +253,7 @@ fn in_window(s: &Schedule) -> bool {
 }
 
 fn override_sl_tp(rule: &CopyRule, t: &Trade, side: Side, quote_offset: f64) -> (Option<f64>, Option<f64>) {
-    let pip = pip_size(&t.symbol);
+    let pip = effective_pip_size(t);
     // Copy mode shifts master's absolute SL/TP into slave's price space so the
     // pip-distance is preserved. Fixed mode is already relative to slave entry.
     let sl = match rule.sl_mode {
@@ -279,6 +285,14 @@ fn pip_size(sym: &str) -> f64 {
     else { 0.0001 }
 }
 
+/// Use the broker-reported pip size if the EA shipped it (all EAs from
+/// v0.1.6+ do). Falls back to the heuristic only on trades that predate
+/// the upgrade — covers the JPY/XAU cases; indices/crypto need the real
+/// value to avoid a 100× off offset application.
+fn effective_pip_size(t: &Trade) -> f64 {
+    if t.pip_size > 0.0 { t.pip_size } else { pip_size(&t.symbol) }
+}
+
 fn starts_with_ci(s: &str, prefix: &str) -> bool {
     let s = s.as_bytes();
     let p = prefix.as_bytes();
@@ -305,7 +319,7 @@ fn compute_volume(
         LotMode::RiskPercent => {
             // Risk = lot_value % of slave equity, sized off SL distance in pips.
             let risk_amount = slave_equity * rule.lot_value / 100.0;
-            let pip = pip_size(&t.symbol);
+            let pip = effective_pip_size(t);
             let sl_pips = match (t.sl, t.price) {
                 (Some(sl), p) if p > 0.0 && pip > 0.0 => ((p - sl).abs() / pip).max(1.0),
                 _ => 20.0,

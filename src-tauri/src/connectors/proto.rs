@@ -141,14 +141,14 @@ pub fn dispatch(account: &Account, msg: S2C, events: &mpsc::UnboundedSender<Conn
         S2C::Heartbeat { balance, equity, .. } =>
             { let _ = events.send(ConnectorEvent::Heartbeat {
                 account_id: id.clone(), balance, equity }); },
-        S2C::Open { ticket, symbol, side, volume, price, sl, tp, ts, origin, comment, .. } =>
+        S2C::Open { ticket, symbol, side, volume, price, sl, tp, ts, origin, comment, pip_size, .. } =>
             { let _ = events.send(ConnectorEvent::TradeOpened(Trade {
                 ticket, account_id: id.clone(),
                 symbol, side, volume, price,
                 sl: opt(sl), tp: opt(tp),
                 opened_at: ts, closed_at: None, profit: None,
                 origin_ticket: (!origin.is_empty()).then_some(origin),
-                comment,
+                comment, pip_size,
             })); },
         S2C::Close { ticket, profit, ts, .. } =>
             { let _ = events.send(ConnectorEvent::TradeClosed {
@@ -160,7 +160,7 @@ pub fn dispatch(account: &Account, msg: S2C, events: &mpsc::UnboundedSender<Conn
                 symbol: String::new(), side: Side::Buy, volume: 0.0, price: 0.0,
                 sl: opt(sl), tp: opt(tp),
                 opened_at: 0, closed_at: None, profit: None,
-                origin_ticket: None, comment: String::new(),
+                origin_ticket: None, comment: String::new(), pip_size: 0.0,
             })); },
         S2C::Pending { ticket, symbol, side, order_type, volume, target, .. } =>
             emit_log(events, id, LogLevel::Info,
@@ -179,7 +179,7 @@ pub fn dispatch(account: &Account, msg: S2C, events: &mpsc::UnboundedSender<Conn
                 sl: None, tp: None,
                 opened_at, closed_at: Some(closed_at), profit: Some(profit),
                 origin_ticket: (!origin.is_empty()).then_some(origin),
-                comment: String::new(),
+                comment: String::new(), pip_size: 0.0,
             })); },
         S2C::HistoryDone { count } =>
             emit_log(events, id, LogLevel::Info, format!("history snapshot: {count} trades")),

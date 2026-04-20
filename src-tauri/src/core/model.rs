@@ -174,6 +174,11 @@ pub struct Trade {
     pub origin_ticket: Option<String>,
     #[serde(default)]
     pub comment: String,
+    /// Broker-reported pip size for the instrument at the time of the event.
+    /// 0 when the EA hasn't been upgraded — the engine falls back to a
+    /// symbol-name heuristic in that case.
+    #[serde(default)]
+    pub pip_size: f64,
 }
 
 /// Normalized event coming from any connector.
