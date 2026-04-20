@@ -181,6 +181,29 @@ pub struct Trade {
     pub pip_size: f64,
 }
 
+/// Kind of pending order — mirrors the master/slave broker's `OP_BUYLIMIT`
+/// etc. `StopLimit` is MT5-only; MT4 and cTrader degrade it to `Stop`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PendingType { Limit, Stop, StopLimit }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingOrder {
+    pub ticket: String,
+    pub account_id: String,
+    pub symbol: String,
+    pub side: Side,
+    pub order_type: PendingType,
+    pub volume: f64,
+    pub target: f64,
+    #[serde(default)] pub sl: Option<f64>,
+    #[serde(default)] pub tp: Option<f64>,
+    /// Expiry as UTC epoch ms; 0 = GTC.
+    #[serde(default)] pub expiry: i64,
+    #[serde(default)] pub origin_ticket: Option<String>,
+    #[serde(default)] pub comment: String,
+    #[serde(default)] pub pip_size: f64,
+}
+
 /// Normalized event coming from any connector.
 #[derive(Debug, Clone)]
 pub enum ConnectorEvent {
@@ -198,6 +221,14 @@ pub enum ConnectorEvent {
     Log { account_id: String, level: LogLevel, message: String },
     Quote(Quote),
     Symbols { account_id: String, symbols: Vec<String> },
+    /// Master placed a new limit/stop order — engine mirrors it on slaves with
+    /// target + SL + TP shifted by `quote_offsets`.
+    PendingOpened(PendingOrder),
+    PendingModified(PendingOrder),
+    PendingCancelled { ticket: String, account_id: String },
+    /// Pending filled on master — no slave action; the mirror pending on
+    /// the slave fills on its own when the slave's broker reaches the target.
+    PendingFilled { ticket: String, account_id: String },
 }
 
 /// Order request addressed to a connector.
@@ -213,10 +244,27 @@ pub struct OrderRequest {
 }
 
 #[derive(Debug, Clone)]
+pub struct PendingOrderRequest {
+    pub origin_ticket: String,
+    pub symbol: String,
+    pub side: Side,
+    pub order_type: PendingType,
+    pub volume: f64,
+    pub target: f64,
+    pub sl: Option<f64>,
+    pub tp: Option<f64>,
+    /// UTC epoch ms; 0 = GTC.
+    pub expiry: i64,
+}
+
+#[derive(Debug, Clone)]
 pub enum ConnectorCmd {
     Open(OrderRequest),
+    OpenPending(PendingOrderRequest),
     Close { ticket: String },
     Modify { ticket: String, sl: Option<f64>, tp: Option<f64> },
+    ModifyPending { ticket: String, target: f64, sl: Option<f64>, tp: Option<f64>, expiry: i64 },
+    CancelPending { ticket: String },
     Subscribe { symbols: Vec<String> },
     ListSymbols,
     Shutdown,

@@ -315,6 +315,36 @@ impl AppState {
                 self.emit_quote_throttled(&key, &q);
                 self.quotes.insert(key, q);
             }
+            ConnectorEvent::PendingOpened(p) => {
+                // Mirror-detection: if a slave EA reports a pending whose
+                // `origin_ticket` matches one we dispatched, wire the slave
+                // ticket into the ticket_map and skip re-dispatching to
+                // avoid infinite mirror loops.
+                let is_mirror = p.origin_ticket.as_deref().map_or(false, |origin| {
+                    let matched = self.ticket_map.resolve_slave_open(
+                        &p.account_id, origin, &p.ticket,
+                    );
+                    if matched {
+                        self.emit_log(LogLevel::Info, &p.account_id,
+                            format!("pending mirror {} ↔ master {origin}", p.ticket));
+                    }
+                    matched
+                });
+                if !is_mirror { engine.on_pending_opened(&p).await; }
+            }
+            ConnectorEvent::PendingModified(p) => {
+                engine.on_pending_modified(&p).await;
+            }
+            ConnectorEvent::PendingCancelled { account_id, ticket } => {
+                engine.on_pending_cancelled(&account_id, &ticket).await;
+            }
+            ConnectorEvent::PendingFilled { ticket, account_id } => {
+                // Master-side fill → slave pending fills on its own when the
+                // slave's broker reaches the target. Just log; ticket_map
+                // cleanup happens when the resulting position closes.
+                self.emit_log(LogLevel::Info, &account_id,
+                    format!("pending {ticket} filled"));
+            }
             ConnectorEvent::Symbols { account_id, symbols } => {
                 // Preserve the broker's original case — some brokers expose
                 // suffixed symbols like "US500.cash" where "US500.CASH" would

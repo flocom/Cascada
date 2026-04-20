@@ -5,6 +5,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 export type UpdateState =
   | { kind: "idle" }
   | { kind: "checking" }
+  | { kind: "up-to-date" }
   | { kind: "available"; version: string; notes?: string }
   | { kind: "downloading"; version: string; pct: number }
   | { kind: "ready"; version: string }
@@ -16,14 +17,24 @@ export const updateState: Writable<UpdateState> = writable({ kind: "idle" });
 
 let currentUpdate: Update | null = null;
 
-/// Kick off an update check. Silent on "up to date" / network failure so the
-/// sidebar stays clean; surfaces errors only when the user clicks *Install*.
-export async function checkForUpdate(): Promise<void> {
+/// Kick off an update check. Background checks are silent — stay idle on
+/// "no update" or network failure. Manual checks pass `manual = true` so the
+/// UI can surface a transient "up to date" / error chip as feedback.
+export async function checkForUpdate(manual = false): Promise<void> {
   updateState.set({ kind: "checking" });
   try {
     const u = await check();
     if (!u) {
-      updateState.set({ kind: "idle" });
+      if (manual) {
+        updateState.set({ kind: "up-to-date" });
+        // Clear the transient chip after a few seconds so the sidebar
+        // doesn't stay noisy forever.
+        setTimeout(() => {
+          updateState.update((s) => (s.kind === "up-to-date" ? { kind: "idle" } : s));
+        }, 4000);
+      } else {
+        updateState.set({ kind: "idle" });
+      }
       return;
     }
     currentUpdate = u;
@@ -33,10 +44,15 @@ export async function checkForUpdate(): Promise<void> {
       notes: u.body ?? undefined,
     });
   } catch (e) {
-    // Network offline / GitHub rate-limit / DNS — don't nag the user.
-    // Log and stay idle; next periodic check will retry.
     console.warn("[updater] check failed:", e);
-    updateState.set({ kind: "idle" });
+    if (manual) {
+      updateState.set({ kind: "error", message: String(e) });
+      setTimeout(() => {
+        updateState.update((s) => (s.kind === "error" ? { kind: "idle" } : s));
+      }, 5000);
+    } else {
+      updateState.set({ kind: "idle" });
+    }
   }
 }
 

@@ -4,7 +4,22 @@
   $: pctStr = s.kind === "downloading" ? `${s.pct.toFixed(0)}%` : "";
 </script>
 
-{#if s.kind === "available"}
+{#if s.kind === "checking"}
+  <div class="banner checking" aria-live="polite">
+    <span class="arrow spinning">↻</span>
+    <span class="text">
+      <span class="line-1">Checking for updates…</span>
+    </span>
+  </div>
+{:else if s.kind === "up-to-date"}
+  <div class="banner ready">
+    <span class="arrow">✓</span>
+    <span class="text">
+      <span class="line-1">You're up to date</span>
+      <span class="line-2">Latest version installed</span>
+    </span>
+  </div>
+{:else if s.kind === "available"}
   <button class="banner" on:click={installUpdate} title={s.notes ?? `Install version ${s.version} and relaunch`}>
     <span class="arrow">↑</span>
     <span class="text">
@@ -58,6 +73,7 @@
   }
   .banner:hover { background: linear-gradient(135deg, #DBEAFE, #BFDBFE); }
   .banner:active { transform: translateY(1px); }
+  .banner.checking    { cursor: default; background: #F1F5F9; border-color: var(--border); color: var(--text-2); }
   .banner.downloading { cursor: default; background: #F1F5F9; border-color: var(--border); color: var(--text-2); flex-wrap: wrap; }
   .banner.ready       { cursor: default; background: #ECFDF5; border-color: #6EE7B7; color: #065F46; }
   .banner.error       { background: #FEF2F2; border-color: #FCA5A5; color: #991B1B; }

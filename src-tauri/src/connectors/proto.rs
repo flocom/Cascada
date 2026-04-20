@@ -13,8 +13,18 @@ pub enum C2S<'a> {
         ticket: &'a str, symbol: &'a str, side: Side,
         volume: f64, sl: f64, tp: f64, slippage: u32,
     },
+    OpenLimit {
+        ticket: &'a str, symbol: &'a str, side: Side,
+        volume: f64, target: f64, sl: f64, tp: f64, expiry: i64,
+    },
+    OpenStop {
+        ticket: &'a str, symbol: &'a str, side: Side,
+        volume: f64, target: f64, sl: f64, tp: f64, expiry: i64,
+    },
     Close { ticket: &'a str },
     Modify { ticket: &'a str, sl: f64, tp: f64 },
+    ModifyPending { ticket: &'a str, target: f64, sl: f64, tp: f64, expiry: i64 },
+    Cancel { ticket: &'a str },
     /// Replace the EA's quote-streaming subscription set. Empty list = stop.
     Subscribe { symbols: &'a [String] },
     /// Ask the EA to dump its full available-symbol list (broker watchlist).
@@ -30,10 +40,31 @@ impl<'a> C2S<'a> {
                 sl: o.sl.unwrap_or(0.0), tp: o.tp.unwrap_or(0.0),
                 slippage: o.max_slippage_pips,
             },
+            ConnectorCmd::OpenPending(p) => {
+                let (ticket, symbol, side) = (&*p.origin_ticket, &*p.symbol, p.side);
+                let (volume, target) = (p.volume, p.target);
+                let sl = p.sl.unwrap_or(0.0);
+                let tp = p.tp.unwrap_or(0.0);
+                let expiry = p.expiry;
+                // Map Limit → open_limit, Stop/StopLimit → open_stop (StopLimit
+                // is MT5-only; MT4 and cTrader treat it as a plain stop, which
+                // is the closest portable behaviour).
+                match p.order_type {
+                    PendingType::Limit => C2S::OpenLimit {
+                        ticket, symbol, side, volume, target, sl, tp, expiry },
+                    PendingType::Stop | PendingType::StopLimit => C2S::OpenStop {
+                        ticket, symbol, side, volume, target, sl, tp, expiry },
+                }
+            }
             ConnectorCmd::Close { ticket } => C2S::Close { ticket },
             ConnectorCmd::Modify { ticket, sl, tp } => C2S::Modify {
                 ticket, sl: sl.unwrap_or(0.0), tp: tp.unwrap_or(0.0),
             },
+            ConnectorCmd::ModifyPending { ticket, target, sl, tp, expiry } => C2S::ModifyPending {
+                ticket, target: *target,
+                sl: sl.unwrap_or(0.0), tp: tp.unwrap_or(0.0), expiry: *expiry,
+            },
+            ConnectorCmd::CancelPending { ticket } => C2S::Cancel { ticket },
             ConnectorCmd::Subscribe { symbols } => C2S::Subscribe { symbols },
             ConnectorCmd::ListSymbols => C2S::ListSymbols {},
             ConnectorCmd::Shutdown => return None,
@@ -100,6 +131,8 @@ pub enum S2C {
         #[serde(default)] tp: f64,
         #[serde(default)] expiry: i64,
         #[serde(default)] origin: String,
+        #[serde(default)] comment: String,
+        #[serde(default)] pip_size: f64,
     },
     PendingModify {
         ticket: String,
@@ -107,6 +140,7 @@ pub enum S2C {
         #[serde(default)] sl: f64,
         #[serde(default)] tp: f64,
         #[serde(default)] volume: f64,
+        #[serde(default)] expiry: i64,
     },
     PendingCancel { ticket: String, #[serde(default)] symbol: String },
     PendingFill { ticket: String, #[serde(default)] symbol: String },
@@ -162,16 +196,43 @@ pub fn dispatch(account: &Account, msg: S2C, events: &mpsc::UnboundedSender<Conn
                 opened_at: 0, closed_at: None, profit: None,
                 origin_ticket: None, comment: String::new(), pip_size: 0.0,
             })); },
-        S2C::Pending { ticket, symbol, side, order_type, volume, target, .. } =>
-            emit_log(events, id, LogLevel::Info,
-                format!("pending {order_type} {side:?} {volume} {symbol} @ {target} (#{ticket})")),
-        S2C::PendingModify { ticket, target, .. } =>
-            emit_log(events, id, LogLevel::Info,
-                format!("pending #{ticket} modified → {target}")),
-        S2C::PendingCancel { ticket, .. } =>
-            emit_log(events, id, LogLevel::Info, format!("pending #{ticket} cancelled")),
-        S2C::PendingFill { ticket, .. } =>
-            emit_log(events, id, LogLevel::Info, format!("pending #{ticket} filled")),
+        S2C::Pending { ticket, symbol, side, order_type, volume, target, sl, tp,
+                       expiry, origin, comment, pip_size } => {
+            let kind = match order_type.as_str() {
+                "Limit"     => PendingType::Limit,
+                "StopLimit" => PendingType::StopLimit,
+                _            => PendingType::Stop,
+            };
+            let _ = events.send(ConnectorEvent::PendingOpened(PendingOrder {
+                ticket, account_id: id.clone(), symbol, side,
+                order_type: kind, volume, target,
+                sl: opt(sl), tp: opt(tp), expiry,
+                origin_ticket: (!origin.is_empty()).then_some(origin),
+                comment, pip_size,
+            }));
+        }
+        S2C::PendingModify { ticket, target, sl, tp, expiry, .. } => {
+            // The wire frame only carries the ticket + new numbers; symbol /
+            // side / order_type are unchanged and don't need to be resent.
+            // Engine uses the ticket_map to resolve which slave(s) to mirror to.
+            let _ = events.send(ConnectorEvent::PendingModified(PendingOrder {
+                ticket, account_id: id.clone(),
+                symbol: String::new(), side: Side::Buy, order_type: PendingType::Limit,
+                volume: 0.0, target,
+                sl: opt(sl), tp: opt(tp), expiry,
+                origin_ticket: None, comment: String::new(), pip_size: 0.0,
+            }));
+        }
+        S2C::PendingCancel { ticket, .. } => {
+            let _ = events.send(ConnectorEvent::PendingCancelled {
+                ticket, account_id: id.clone(),
+            });
+        }
+        S2C::PendingFill { ticket, .. } => {
+            let _ = events.send(ConnectorEvent::PendingFilled {
+                ticket, account_id: id.clone(),
+            });
+        }
         S2C::History { ticket, symbol, side, volume, entry, close: _, profit, origin, opened_at, closed_at } =>
             { let _ = events.send(ConnectorEvent::HistoricalTrade(Trade {
                 ticket, account_id: id.clone(),

@@ -9,7 +9,7 @@
   import Compare from "./components/Compare.svelte";
   import Logs from "./components/Logs.svelte";
   import UpdateBanner from "./components/UpdateBanner.svelte";
-  import { startUpdateWatcher } from "./lib/updater";
+  import { startUpdateWatcher, checkForUpdate, updateState } from "./lib/updater";
 
   type Tab = "dashboard" | "accounts" | "rules" | "trades" | "compare" | "logs";
   let accounts: Account[] = [];
@@ -209,6 +209,13 @@
     </nav>
     <div class="sidebar-footer">
       <UpdateBanner />
+      <button class="check-update"
+              title="Check GitHub for a newer Cascada version"
+              disabled={$updateState.kind === 'checking' || $updateState.kind === 'downloading'}
+              on:click={() => checkForUpdate(true)}>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+        Check for updates
+      </button>
       <div class="settings-row">
         <button class="settings-btn" title="Export accounts & rules to a JSON file"
                 disabled={busy !== ""} on:click={exportSettings}>
@@ -301,6 +308,16 @@
   }
   .settings-btn:hover:not(:disabled) { background: var(--surface-muted); color: var(--text); }
   .settings-btn:disabled { opacity: 0.55; cursor: progress; }
+  .check-update {
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    width: 100%; padding: 6px 10px;
+    font-size: 12px; font-weight: 500; color: var(--text-2);
+    background: transparent; border: 1px solid var(--border);
+    border-radius: var(--radius-sm); cursor: pointer;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .check-update:hover:not(:disabled) { background: var(--surface-muted); color: var(--primary); border-color: var(--primary); }
+  .check-update:disabled { opacity: 0.55; cursor: progress; }
   .status-line { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 
   main { display: flex; flex-direction: column; overflow: hidden; }

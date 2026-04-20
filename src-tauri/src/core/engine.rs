@@ -207,6 +207,142 @@ impl CopyEngine {
             }
         }
     }
+
+    pub async fn on_pending_opened(&self, p: &PendingOrder) {
+        let rules: Vec<CopyRule> = self.state.rules.read().iter()
+            .filter(|r| r.enabled && r.master_id == p.account_id)
+            .cloned()
+            .collect();
+        if rules.is_empty() { return; }
+
+        let (master_balance, master_equity) = match self.state.accounts.get(&p.account_id) {
+            Some(a) => (a.balance, a.equity), None => return,
+        };
+        let mut caps_cache: HashMap<String, SlaveCaps> = HashMap::new();
+
+        // Synthesize a Trade-shaped value so we can reuse the filter +
+        // sizing logic designed for market orders. `price` is the pending
+        // target (close enough for RiskPercent's SL-distance maths).
+        let as_trade = pending_as_trade(p);
+
+        for rule in rules {
+            let caps = if rule.max_open_positions > 0
+                || rule.max_exposure_lots > 0.0
+                || rule.max_daily_loss > 0.0
+            {
+                Some(
+                    caps_cache.entry(rule.slave_id.clone())
+                        .or_insert_with(|| self.compute_slave_caps(&rule.slave_id))
+                        .clone(),
+                )
+            } else { None };
+            if let Err(reason) = self.preflight(&rule, &as_trade, caps.as_ref()) {
+                self.state.emit_log(LogLevel::Info, &rule.slave_id,
+                    format!("skip pending {} ({reason})", p.ticket));
+                continue;
+            }
+            let (slave_balance, slave_equity) = match self.state.accounts.get(&rule.slave_id) {
+                Some(a) => (a.balance, a.equity), None => continue,
+            };
+
+            let symbol = translate_symbol(&rule, &p.symbol);
+            let side = if rule.reverse { flip(p.side) } else { p.side };
+            let volume = clamp_volume(&rule,
+                compute_volume(&rule, master_balance, master_equity, slave_balance, slave_equity, &as_trade));
+            if volume <= 0.0 {
+                self.state.emit_log(LogLevel::Warn, &rule.slave_id,
+                    format!("skip pending {} (volume rounded to 0)", p.ticket));
+                continue;
+            }
+
+            // Same manual per-symbol pip-offset used for market copies — but
+            // applied to target AND sl AND tp, since a pending has a known
+            // entry price (unlike a market order where the slave's entry is
+            // whatever its broker fills at).
+            let pip = effective_pip_size(&as_trade);
+            let quote_offset: f64 = rule.quote_offsets.iter()
+                .find(|o| o.symbol.eq_ignore_ascii_case(&p.symbol))
+                .map(|o| o.pips * pip)
+                .unwrap_or(0.0);
+            let target = p.target + quote_offset;
+            let sl = p.sl.map(|v| v + quote_offset);
+            let tp = p.tp.map(|v| v + quote_offset);
+
+            let req = PendingOrderRequest {
+                origin_ticket: p.ticket.clone(),
+                symbol, side, order_type: p.order_type,
+                volume, target, sl, tp, expiry: p.expiry,
+            };
+
+            self.state.ticket_map.mark_pending(
+                &rule.slave_id, &p.ticket,
+                MasterKey { account_id: p.account_id.clone(), ticket: p.ticket.clone() },
+            );
+
+            let state = self.state.clone();
+            let slave_id = rule.slave_id.clone();
+            let delay = rule.trade_delay_ms;
+            tokio::spawn(async move {
+                if delay > 0 {
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                }
+                if let Some(h) = state.connector_handle(&slave_id) {
+                    if let Err(e) = h.send(ConnectorCmd::OpenPending(req)).await {
+                        state.emit_log(LogLevel::Error, &slave_id,
+                            format!("pending dispatch failed: {e}"));
+                    }
+                } else {
+                    state.emit_log(LogLevel::Warn, &slave_id, "slave offline, pending skipped");
+                }
+            });
+        }
+    }
+
+    /// Mirror a master-side modify to the slave pending(s). The wire frame
+    /// doesn't carry the symbol, so we can't re-derive `quote_offset` here;
+    /// values are forwarded 1:1 (an acceptable approximation — users who
+    /// care can capture a new offset via the Compare tab).
+    pub async fn on_pending_modified(&self, p: &PendingOrder) {
+        let key = MasterKey { account_id: p.account_id.clone(), ticket: p.ticket.clone() };
+        for s in self.state.ticket_map.slaves_for(&key) {
+            if let Some(h) = self.state.connector_handle(&s.account_id) {
+                let _ = h.send(ConnectorCmd::ModifyPending {
+                    ticket: s.ticket, target: p.target, sl: p.sl, tp: p.tp, expiry: p.expiry,
+                }).await;
+            }
+        }
+    }
+
+    pub async fn on_pending_cancelled(&self, account_id: &str, ticket: &str) {
+        let key = MasterKey { account_id: account_id.to_string(), ticket: ticket.to_string() };
+        for s in self.state.ticket_map.slaves_for(&key) {
+            if let Some(h) = self.state.connector_handle(&s.account_id) {
+                let _ = h.send(ConnectorCmd::CancelPending { ticket: s.ticket.clone() }).await;
+            }
+        }
+        self.state.ticket_map.drop_master(&key);
+    }
+}
+
+/// Project a PendingOrder into a Trade shape so we can reuse preflight +
+/// volume sizing without touching their signatures.
+fn pending_as_trade(p: &PendingOrder) -> Trade {
+    Trade {
+        ticket: p.ticket.clone(),
+        account_id: p.account_id.clone(),
+        symbol: p.symbol.clone(),
+        side: p.side,
+        volume: p.volume,
+        price: p.target,
+        sl: p.sl,
+        tp: p.tp,
+        opened_at: chrono::Utc::now().timestamp_millis(),
+        closed_at: None,
+        profit: None,
+        origin_ticket: p.origin_ticket.clone(),
+        comment: p.comment.clone(),
+        pip_size: p.pip_size,
+    }
 }
 
 fn flip(s: Side) -> Side { if matches!(s, Side::Buy) { Side::Sell } else { Side::Buy } }
