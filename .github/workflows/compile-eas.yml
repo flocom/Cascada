@@ -45,7 +45,10 @@ jobs:
           # then force-kill everything MT-related.
           $me  = 'C:\Program Files\MetaTrader 5\metaeditor64.exe'
           $inc = 'C:\Program Files\MetaTrader 5\MQL5\Include\Trade\Trade.mqh'
-          Start-Process -FilePath '.\mt5setup.exe' -ArgumentList '/VERYSILENT','/NORESTART' | Out-Null
+          # MetaQuotes's installer isn't Inno Setup — it's a custom wrapper
+          # that understands /auto. That's the only argument documented on
+          # the MQL5 forum; Inno-style flags are silently ignored.
+          Start-Process -FilePath '.\mt5setup.exe' -ArgumentList '/auto' | Out-Null
           $deadline = (Get-Date).AddMinutes(5)
           while (-not (Test-Path $me) -and (Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 3
