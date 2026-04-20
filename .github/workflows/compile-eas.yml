@@ -90,12 +90,16 @@ jobs:
             foreach ($name in @('Trade\Trade.mqh','Trade\PositionInfo.mqh','Trade\OrderInfo.mqh')) {
               $p = Join-Path $target $name
               if (-not (Test-Path $p)) { continue }
-              # Files are UTF-16 LE with BOM — read/write with the matching encoding.
-              $text = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::Unicode)
+              # mskelton/mql5 files are plain ASCII/UTF-8 without BOM —
+              # read/write in UTF-8 so the regex sees real characters
+              # (previous attempt read as UTF-16 → garbled → no match).
+              $text = [System.IO.File]::ReadAllText($p, [System.Text.UTF8Encoding]::new($false))
               $new  = [Regex]::Replace($text, '(~[A-Za-z_]\w*\(\s*void\s*\))\s*;', '$1 {}')
               if ($new -ne $text) {
-                [System.IO.File]::WriteAllText($p, $new, [System.Text.UnicodeEncoding]::new($false, $true))
+                [System.IO.File]::WriteAllText($p, $new, [System.Text.UTF8Encoding]::new($false))
                 Write-Host "Patched destructors in $p"
+              } else {
+                Write-Host "::warning::No destructor match in $p — check encoding"
               }
             }
           }
