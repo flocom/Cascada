@@ -54,6 +54,7 @@ fn main() {
             commands::install_ctrader_bot_at,
             commands::install_mt_ea_at,
             commands::install_mt_ea,
+            commands::check_ea_versions,
             commands::subscribe_symbols,
             commands::list_quotes,
             commands::list_subscriptions,

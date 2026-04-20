@@ -2,13 +2,13 @@ use super::util::{err, push_unique, wine_prefixes, wine_user_dirs};
 use crate::core::model::Platform;
 use std::path::{Path, PathBuf};
 
-const MT4_EA_SRC: &str     = include_str!("../../../ea/mt4/CascadaBridge.mq4");
-const MT5_EA_SRC: &str     = include_str!("../../../ea/mt5/CascadaBridge.mq5");
+pub(crate) const MT4_EA_SRC: &str     = include_str!("../../../ea/mt4/CascadaBridge.mq4");
+pub(crate) const MT5_EA_SRC: &str     = include_str!("../../../ea/mt5/CascadaBridge.mq5");
 /// Pre-compiled binaries produced by the `Compile EAs` GitHub workflow.
 /// Shipping them alongside the source means MT4/MT5 runs the EA on first
 /// launch even on terminals without MetaEditor (headless Wine, etc).
-const MT4_EA_BIN: &[u8]    = include_bytes!("../../../ea/mt4/compiled/CascadaBridge.ex4");
-const MT5_EA_BIN: &[u8]    = include_bytes!("../../../ea/mt5/compiled/CascadaBridge.ex5");
+pub(crate) const MT4_EA_BIN: &[u8]    = include_bytes!("../../../ea/mt4/compiled/CascadaBridge.ex4");
+pub(crate) const MT5_EA_BIN: &[u8]    = include_bytes!("../../../ea/mt5/compiled/CascadaBridge.ex5");
 
 struct MtAssets {
     subdir: &'static str,       // "MQL4" / "MQL5"
@@ -159,7 +159,7 @@ pub(crate) fn mt_common_dirs() -> Vec<PathBuf> {
 
 /// Locate every `<…>/<subdir>/Experts` directory wherever an MT4/MT5 terminal
 /// could keep its files. `subdir` is "MQL4" or "MQL5".
-fn discover_mt_terminals(subdir: &str) -> Vec<PathBuf> {
+pub(crate) fn discover_mt_terminals(subdir: &str) -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = Vec::new();
     let home = directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf());
 

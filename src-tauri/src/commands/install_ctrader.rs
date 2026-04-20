@@ -2,9 +2,9 @@ use super::util::{err, push_unique, whoami, wine_prefixes};
 use std::path::{Path, PathBuf};
 
 const CTRADER_BOT_SRC: &str = include_str!("../../../ea/ctrader/CascadaBridge.cs");
-const CTRADER_BOT_ALGO: &[u8] = include_bytes!("../../../ea/ctrader/prebuilt/CascadaBridge.algo");
+pub(crate) const CTRADER_BOT_ALGO: &[u8] = include_bytes!("../../../ea/ctrader/prebuilt/CascadaBridge.algo");
 
-fn discover_ctrader_roots() -> Vec<PathBuf> {
+pub(crate) fn discover_ctrader_roots() -> Vec<PathBuf> {
     let mut docs: Vec<PathBuf> = Vec::new();
     let home = directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf());
 

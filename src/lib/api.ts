@@ -81,6 +81,14 @@ export interface QuoteOffset {
   pips: number;    // signed pip shift applied to SL/TP
 }
 
+export interface EaStatus {
+  platform: Platform;
+  path: string;
+  up_to_date: boolean;
+  installed_bytes: number;
+  bundled_bytes: number;
+}
+
 export interface Quote {
   account_id: string;
   symbol: string;
@@ -183,6 +191,9 @@ export const api = {
     invoke<string>("install_mt_ea_at", { platform, path }),
   installMtEa: (platform: "MT4" | "MT5") =>
     invoke<string[]>("install_mt_ea", { platform }),
+
+  /** Compare installed EAs / cBots with the ones bundled in this build. */
+  checkEaVersions: () => invoke<EaStatus[]>("check_ea_versions"),
 
   exportSettings: (path: string) => invoke<string>("export_settings", { path }),
   importSettings: (path: string) =>
