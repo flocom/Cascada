@@ -8,6 +8,8 @@
   import Trades from "./components/Trades.svelte";
   import Compare from "./components/Compare.svelte";
   import Logs from "./components/Logs.svelte";
+  import UpdateBanner from "./components/UpdateBanner.svelte";
+  import { startUpdateWatcher } from "./lib/updater";
 
   type Tab = "dashboard" | "accounts" | "rules" | "trades" | "compare" | "logs";
   let accounts: Account[] = [];
@@ -74,6 +76,10 @@
   }
 
   onMount(async () => {
+    // Kicks off the GitHub-release update check; sidebar banner surfaces
+    // results. Non-blocking — we don't await it.
+    const stopUpdater = startUpdateWatcher();
+    unlisten.push(stopUpdater);
     await refresh();
     unlisten.push(await api.onAccountUpdate((a) => {
       // Coalesce into the next rAF — multiple heartbeats collapse to one
@@ -202,6 +208,7 @@
       {/each}
     </nav>
     <div class="sidebar-footer">
+      <UpdateBanner />
       <div class="settings-row">
         <button class="settings-btn" title="Export accounts & rules to a JSON file"
                 disabled={busy !== ""} on:click={exportSettings}>

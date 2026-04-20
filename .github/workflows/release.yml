@@ -64,6 +64,12 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Minisign keypair that signs update artifacts (latest.json, .sig
+          # files). The matching public key is baked into the app via
+          # tauri.conf.json → plugins.updater.pubkey, so only builds signed
+          # with THIS private key will be accepted as updates.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Cascada ${{ github.ref_name }}'

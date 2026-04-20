@@ -114,6 +114,11 @@ Every master→slave link is a **rule** with fine-grained control:
 - **No telemetry.** Zero outbound network calls beyond what the broker APIs need.
 - **Export / import** your settings (accounts + rules) as a signed JSON bundle — perfect for backups or migrating between machines.
 
+### 🔄 Built-in auto-updater
+- On launch, Cascada checks [GitHub Releases](https://github.com/flocom/Cascada/releases/latest) for a newer version (silent on network error, non-blocking).
+- When a new version is found → a discreet **"Update available"** banner appears in the sidebar.
+- One click → signed installer downloaded and applied; app relaunches on its own. Every update is minisign-verified against the public key baked into your installed build, so a compromised GitHub release can't push arbitrary code.
+
 ### 🚀 Built for speed
 - **Tauri 2 + Rust** core → ~20 MB installer, <50 MB RAM at rest.
 - **Quote hot path** is zero-alloc; tick streams from all accounts merged into a single reactive store.

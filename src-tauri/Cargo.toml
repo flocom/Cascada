@@ -1,6 +1,6 @@
 [package]
 name = "cascada"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Copy trading desktop app"
 
@@ -10,6 +10,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "sync", "time", "net", "io-util"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
