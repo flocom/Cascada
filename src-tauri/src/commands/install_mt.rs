@@ -2,38 +2,64 @@ use super::util::{err, push_unique, wine_prefixes, wine_user_dirs};
 use crate::core::model::Platform;
 use std::path::{Path, PathBuf};
 
-const MT4_EA_SRC: &str = include_str!("../../../ea/mt4/CascadaBridge.mq4");
-const MT5_EA_SRC: &str = include_str!("../../../ea/mt5/CascadaBridge.mq5");
+const MT4_EA_SRC: &str     = include_str!("../../../ea/mt4/CascadaBridge.mq4");
+const MT5_EA_SRC: &str     = include_str!("../../../ea/mt5/CascadaBridge.mq5");
+/// Pre-compiled binaries produced by the `Compile EAs` GitHub workflow.
+/// Shipping them alongside the source means MT4/MT5 runs the EA on first
+/// launch even on terminals without MetaEditor (headless Wine, etc).
+const MT4_EA_BIN: &[u8]    = include_bytes!("../../../ea/mt4/compiled/CascadaBridge.ex4");
+const MT5_EA_BIN: &[u8]    = include_bytes!("../../../ea/mt5/compiled/CascadaBridge.ex5");
 
-fn mt_assets(platform: Platform) -> Result<(&'static str, &'static str, &'static str), String> {
+struct MtAssets {
+    subdir: &'static str,       // "MQL4" / "MQL5"
+    src_name: &'static str,     // "CascadaBridge.mq4" / "CascadaBridge.mq5"
+    src_body: &'static str,     // embedded source
+    bin_name: &'static str,     // "CascadaBridge.ex4" / "CascadaBridge.ex5"
+    bin_body: &'static [u8],    // embedded compiled binary
+}
+
+fn mt_assets(platform: Platform) -> Result<MtAssets, String> {
     match platform {
-        Platform::MT4 => Ok(("MQL4", "CascadaBridge.mq4", MT4_EA_SRC)),
-        Platform::MT5 => Ok(("MQL5", "CascadaBridge.mq5", MT5_EA_SRC)),
+        Platform::MT4 => Ok(MtAssets {
+            subdir: "MQL4", src_name: "CascadaBridge.mq4", src_body: MT4_EA_SRC,
+            bin_name: "CascadaBridge.ex4", bin_body: MT4_EA_BIN,
+        }),
+        Platform::MT5 => Ok(MtAssets {
+            subdir: "MQL5", src_name: "CascadaBridge.mq5", src_body: MT5_EA_SRC,
+            bin_name: "CascadaBridge.ex5", bin_body: MT5_EA_BIN,
+        }),
         Platform::CTrader => Err("cTrader uses install_ctrader_bot".into()),
     }
 }
 
-async fn write_mt_to(experts: &Path, filename: &str, source: &str) -> Result<String, String> {
+/// Writes both the `.mq?` source and the pre-compiled `.ex?` to the Experts
+/// folder. Returns the binary path (what MT actually loads) so the UI can
+/// show a useful confirmation. On terminals with MetaEditor present, the
+/// source lets the user inspect / tweak; on headless terminals the `.ex?`
+/// takes over and the EA runs immediately.
+async fn write_mt_to(experts: &Path, a: &MtAssets) -> Result<String, String> {
     tokio::fs::create_dir_all(experts).await.map_err(err)?;
-    let target = experts.join(filename);
-    tokio::fs::write(&target, source).await.map_err(err)?;
-    Ok(target.to_string_lossy().into_owned())
+    tokio::fs::write(experts.join(a.src_name), a.src_body).await.map_err(err)?;
+    let bin_path = experts.join(a.bin_name);
+    tokio::fs::write(&bin_path, a.bin_body).await.map_err(err)?;
+    Ok(bin_path.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
 pub async fn install_mt_ea_at(platform: Platform, path: String) -> Result<String, String> {
-    let (subdir, filename, source) = mt_assets(platform)?;
+    let a = mt_assets(platform)?;
     let base = Path::new(&path);
     let experts = if base.ends_with("Experts") { base.to_path_buf() }
-        else if base.join(subdir).join("Experts").is_dir() { base.join(subdir).join("Experts") }
-        else if base.ends_with(subdir) { base.join("Experts") }
-        else { base.join(subdir).join("Experts") };
-    write_mt_to(&experts, filename, source).await
+        else if base.join(a.subdir).join("Experts").is_dir() { base.join(a.subdir).join("Experts") }
+        else if base.ends_with(a.subdir) { base.join("Experts") }
+        else { base.join(a.subdir).join("Experts") };
+    write_mt_to(&experts, &a).await
 }
 
 #[tauri::command]
 pub async fn install_mt_ea(platform: Platform) -> Result<Vec<String>, String> {
-    let (subdir, filename, source) = mt_assets(platform)?;
+    let a = mt_assets(platform)?;
+    let subdir = a.subdir;
     let roots = tokio::task::spawn_blocking(move || discover_mt_terminals(subdir)).await.map_err(err)?;
     if roots.is_empty() {
         return Err(format!("No {} terminal found. Use 'Pick location…' instead.",
@@ -41,7 +67,7 @@ pub async fn install_mt_ea(platform: Platform) -> Result<Vec<String>, String> {
     }
     let mut written = Vec::with_capacity(roots.len());
     for experts in roots {
-        let p = write_mt_to(&experts, filename, source).await?;
+        let p = write_mt_to(&experts, &a).await?;
         written.push(p);
     }
     Ok(written)
