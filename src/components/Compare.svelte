@@ -225,6 +225,15 @@
     durationByRow = durationByRow;
   }
 
+  /// Kick a capture on every pair that has a master symbol and isn't already
+  /// sampling. Each row uses its own configured duration, so they all land
+  /// roughly in sync when defaults are untouched (~15 s).
+  function startCaptureAll() {
+    pairs.forEach((p, i) => {
+      if (p.master.trim() && !sampling.has(i)) startCapture(i);
+    });
+  }
+
   function startCapture(i: number) {
     const ms = getDuration(i);
     sampling.set(i, {
@@ -271,6 +280,16 @@
   }
 
   $: matchingRules = rules.filter((r) => r.master_id === masterId && r.slave_id === slaveId);
+  // How many rows would a "Capture all" click actually fire on — filled
+  // master symbol AND not already sampling. Drives both the button's label
+  // and whether it's rendered at all. Single O(n) pass over `pairs`.
+  $: capturableCount = (() => {
+    let n = 0;
+    for (let i = 0; i < pairs.length; i++) {
+      if (pairs[i].master.trim() && !sampling.has(i)) n++;
+    }
+    return n;
+  })();
 
   // Precomputed symbol → pair-indices lookup: a single quote event touches
   // at most a handful of rows instead of walking `pairs` every tick.
@@ -691,6 +710,14 @@
                 on:click={() => addPreset(METALS)}>
           + Metals <span class="count">({METALS.length})</span>
         </button>
+        {#if masterId && slaveId && capturableCount > 0}
+          <span class="presets-divider"></span>
+          <button class="preset-pill capture"
+                  title={`Start capture on the ${capturableCount} pair(s) not already sampling — one click instead of row-by-row`}
+                  on:click={startCaptureAll}>
+            ● Capture all <span class="count">({capturableCount})</span>
+          </button>
+        {/if}
       </div>
       <p class="hint">
         Δ = (slave mid − master mid) / pip · positive = slave quotes higher than master.
@@ -1009,6 +1036,8 @@
   .preset-pill.primary:hover { background: #DBEAFE; border-color: #60A5FA; }
   .preset-pill.metal { color: #92400E; border-color: #FDE68A; background: #FFFBEB; font-weight: 600; }
   .preset-pill.metal:hover { background: #FEF3C7; border-color: #F59E0B; color: #78350F; }
+  .preset-pill.capture { color: #7C2D12; border-color: #FDBA74; background: #FFF7ED; font-weight: 600; }
+  .preset-pill.capture:hover { background: #FFEDD5; border-color: #F97316; color: #9A3412; }
   .preset-pill .count { opacity: 0.6; font-weight: 500; margin-left: 2px; }
 
   /* ─────────── Capture column ─────────── */
