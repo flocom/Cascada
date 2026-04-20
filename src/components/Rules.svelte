@@ -134,6 +134,16 @@
     if (mapN) out.push({ kind: "info", text: `map · ${mapN}` });
     if (r.sl_mode !== "Copy") out.push({ kind: "info", text: `SL ${r.sl_mode === "Fixed" ? r.sl_pips + "p" : "off"}` });
     if (r.tp_mode !== "Copy") out.push({ kind: "info", text: `TP ${r.tp_mode === "Fixed" ? r.tp_pips + "p" : "off"}` });
+    if (r.trailing_pips)       out.push({ kind: "info", text: `trail ${r.trailing_pips}p` });
+    if (r.breakeven_after_pips)out.push({ kind: "info", text: `BE +${r.breakeven_after_pips}p` });
+    if (r.max_slippage_pips)   out.push({ kind: "info", text: `slip ≤ ${r.max_slippage_pips}p` });
+    if (r.min_lot)             out.push({ kind: "info", text: `min ${r.min_lot} lot` });
+    if (r.max_lot)             out.push({ kind: "info", text: `max ${r.max_lot} lot` });
+    const offN = r.quote_offsets?.length ?? 0;
+    if (offN)                  out.push({ kind: "info", text: `offset · ${offN}` });
+    if (r.quote_compensate)    out.push({ kind: "info", text: `drift comp${r.quote_skip_pips ? ` · skip>${r.quote_skip_pips}p` : ""}` });
+    if (r.comment_filter)      out.push({ kind: "info", text: `cmt “${r.comment_filter}”` });
+    if (r.skip_older_than_secs)out.push({ kind: "info", text: `skip >${r.skip_older_than_secs}s` });
     if (r.max_open_positions) out.push({ kind: "info", text: `≤ ${r.max_open_positions} pos` });
     if (r.max_exposure_lots)  out.push({ kind: "info", text: `≤ ${r.max_exposure_lots} lots` });
     if (r.max_daily_loss)     out.push({ kind: "danger", text: `−${r.max_daily_loss} stop` });

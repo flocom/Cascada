@@ -316,12 +316,20 @@ impl AppState {
                 self.quotes.insert(key, q);
             }
             ConnectorEvent::Symbols { account_id, symbols } => {
-                let mut canon: Vec<String> = symbols.into_iter()
-                    .map(|s| s.trim().to_uppercase())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                canon.sort();
-                canon.dedup();
+                // Preserve the broker's original case — some brokers expose
+                // suffixed symbols like "US500.cash" where "US500.CASH" would
+                // fail a `MarketInfo` / `SymbolInfoDouble` lookup. We dedupe
+                // case-insensitively (stable order) so "EURUSD" vs "eurusd"
+                // don't both show up.
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+                let mut canon: Vec<String> = Vec::with_capacity(symbols.len());
+                for s in symbols {
+                    let trimmed = s.trim();
+                    if trimmed.is_empty() { continue; }
+                    let upper = trimmed.to_uppercase();
+                    if seen.insert(upper) { canon.push(trimmed.to_string()); }
+                }
+                canon.sort_by(|a, b| a.to_ascii_uppercase().cmp(&b.to_ascii_uppercase()));
                 self.symbols.insert(account_id.clone(), canon.clone());
                 if let Some(h) = self.app_handle.get() {
                     let _ = h.emit(EVT_SYMBOLS, (&account_id, &canon));
@@ -340,22 +348,24 @@ impl AppState {
     }
 
     /// Replace this account's symbol subscription set and push it to the EA.
-    /// Returns the canonicalised (uppercased, deduped) list that was sent.
+    /// Preserves the caller's case so case-sensitive broker tickers
+    /// (e.g. `US500.cash`) reach the EA intact. Dedupe is case-insensitive.
     pub async fn set_subscription(&self, id: &str, symbols: Vec<String>) -> Vec<String> {
-        let mut canon: Vec<String> = symbols.into_iter()
-            .map(|s| s.trim().to_uppercase())
-            .filter(|s| !s.is_empty())
-            .collect();
-        canon.sort();
-        canon.dedup();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut canon: Vec<String> = Vec::with_capacity(symbols.len());
+        for s in symbols {
+            let trimmed = s.trim();
+            if trimmed.is_empty() { continue; }
+            let upper = trimmed.to_uppercase();
+            if seen.insert(upper) { canon.push(trimmed.to_string()); }
+        }
+        canon.sort_by(|a, b| a.to_ascii_uppercase().cmp(&b.to_ascii_uppercase()));
         self.subscriptions.insert(id.to_string(), canon.clone());
         // Drop any cached quotes for symbols we no longer subscribe to.
-        // HashSet lookup avoids O(n·m) over canon for accounts that stream
-        // hundreds of symbols.
-        let keep: std::collections::HashSet<&str> = canon.iter().map(|s| s.as_str()).collect();
+        // Quotes are stored with uppercased symbols (see `Quote` arm above),
+        // so the keep-set is uppercase to match.
+        let keep: std::collections::HashSet<String> = canon.iter().map(|s| s.to_uppercase()).collect();
         self.quotes.retain(|(acc, sym), _| acc != id || keep.contains(sym.as_str()));
-        // Keep the throttle map in sync so it doesn't leak across
-        // subscription changes (previously grew unbounded).
         self.quote_last_emit.retain(|(acc, sym), _| acc != id || keep.contains(sym.as_str()));
         if let Some(h) = self.connector_handle(id) {
             let _ = h.send(ConnectorCmd::Subscribe { symbols: canon.clone() }).await;

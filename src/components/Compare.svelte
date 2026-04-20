@@ -153,8 +153,22 @@
 
   async function applySubscription() {
     if (!masterId || !slaveId) return;
-    const ms = Array.from(new Set(pairs.map((p) => p.master.trim().toUpperCase()).filter(Boolean)));
-    const ss = Array.from(new Set(pairs.map((p) => (p.slave || p.master).trim().toUpperCase()).filter(Boolean)));
+    // Preserve broker case — some brokers use suffixed tickers like
+    // "US500.cash" where uppercasing would break their symbol lookup.
+    // Dedupe is case-insensitive so "EURUSD" and "eurusd" don't both go out.
+    const dedup = (arr: string[]) => {
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const s of arr) {
+        const t = s.trim();
+        if (!t) continue;
+        const k = t.toUpperCase();
+        if (!seen.has(k)) { seen.add(k); out.push(t); }
+      }
+      return out;
+    };
+    const ms = dedup(pairs.map((p) => p.master));
+    const ss = dedup(pairs.map((p) => p.slave || p.master));
     await Promise.all([
       api.subscribeSymbols(masterId, ms),
       api.subscribeSymbols(slaveId,  ss),
