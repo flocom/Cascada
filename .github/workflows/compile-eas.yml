@@ -32,8 +32,7 @@ jobs:
         uses: fx31337/mql-compile-action@master
         with:
           path: ea/mt5/CascadaBridge.mq5
-          mt-version: 5
-          include: .
+          init-platform: true
           verbose: true
 
       - name: Move .ex5 into compiled/
@@ -81,8 +80,7 @@ jobs:
         uses: fx31337/mql-compile-action@master
         with:
           path: ea/mt4/CascadaBridge.mq4
-          mt-version: 4
-          include: .
+          init-platform: true
           verbose: true
 
       - name: Move .ex4 into compiled/
