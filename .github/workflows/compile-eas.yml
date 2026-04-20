@@ -51,6 +51,36 @@ jobs:
             throw 'metaeditor64.exe missing — install failed'
           }
 
+      - name: Seed MQL5 stdlib (Trade\*.mqh)
+        shell: pwsh
+        run: |
+          # MT5's silent installer doesn't unpack the MQL5 standard library
+          # (Trade\Trade.mqh etc.) — that normally happens when terminal64
+          # connects to a broker for the first time, which never succeeds
+          # on a headless runner. Drop the files into both candidate include
+          # paths (install + per-user data folder) from mskelton/mql5's
+          # ISC-licensed mirror so MetaEditor resolves them.
+          git clone --depth 1 https://github.com/mskelton/mql5.git '.mql5-stdlib'
+          $srcInc = Join-Path $PWD '.mql5-stdlib\Include'
+          $destInstall = 'C:\Program Files\MetaTrader 5\MQL5\Include'
+          New-Item -ItemType Directory -Force -Path $destInstall | Out-Null
+          Copy-Item -Path "$srcInc\*" -Destination $destInstall -Recurse -Force
+          Write-Host "Seeded $destInstall"
+          # Also populate the per-user Terminal hash folder MetaEditor tends
+          # to query. Create one if none exists yet.
+          $termRoot = 'C:\Users\runneradmin\AppData\Roaming\MetaQuotes\Terminal'
+          New-Item -ItemType Directory -Force -Path $termRoot | Out-Null
+          $termDir  = Get-ChildItem $termRoot -Directory -ErrorAction SilentlyContinue |
+                      Where-Object { $_.Name -match '^[0-9A-F]{32}$' } | Select-Object -First 1
+          if (-not $termDir) {
+            $h = -join ((1..32) | ForEach-Object { '{0:X}' -f (Get-Random -Min 0 -Max 16) })
+            $termDir = New-Item -ItemType Directory -Path (Join-Path $termRoot $h)
+          }
+          $destUser = Join-Path $termDir.FullName 'MQL5\Include'
+          New-Item -ItemType Directory -Force -Path $destUser | Out-Null
+          Copy-Item -Path "$srcInc\*" -Destination $destUser -Recurse -Force
+          Write-Host "Seeded $destUser"
+
       - name: Convert sources to UTF-16 LE + BOM (MetaEditor native)
         shell: pwsh
         run: |
