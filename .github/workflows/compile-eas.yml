@@ -55,12 +55,14 @@ jobs:
         shell: pwsh
         run: |
           # MT5's silent installer doesn't unpack the MQL5 standard library
-          # (Trade\Trade.mqh etc.) — that normally happens when terminal64
-          # connects to a broker for the first time, which never succeeds
-          # on a headless runner. Drop the files into both candidate include
-          # paths (install + per-user data folder) from mskelton/mql5's
-          # ISC-licensed mirror so MetaEditor resolves them.
-          git clone --depth 1 https://github.com/mskelton/mql5.git '.mql5-stdlib'
+          # (Trade\Trade.mqh etc.) — that only happens when terminal64
+          # connects to a broker on first run, which fails on a headless
+          # runner. Drop the stdlib in from a public GitHub mirror that
+          # ships the FULL headers with inline function bodies
+          # (CTrade::method definitions live in the .mqh, not in separate
+          # .cpp that never existed on disk — unlike the mskelton/mql5
+          # snapshot which is prototype-only).
+          git clone --depth 1 https://github.com/terencebeauj/Trading_bot_BollingerBands.git '.mql5-stdlib'
           $srcInc = Join-Path $PWD '.mql5-stdlib\Include'
           $destInstall = 'C:\Program Files\MetaTrader 5\MQL5\Include'
           New-Item -ItemType Directory -Force -Path $destInstall | Out-Null
@@ -80,29 +82,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path $destUser | Out-Null
           Copy-Item -Path "$srcInc\*" -Destination $destUser -Recurse -Force
           Write-Host "Seeded $destUser"
-
-          # mskelton/mql5 is a 2023 snapshot; its CTrade / CPositionInfo /
-          # COrderInfo destructors are declared as `~C…(void);` without an
-          # inline body, but the .cpp bodies that used to live in MT5 are
-          # not shipped. Modern MT5 headers use `~C…(void) {}` inline; patch
-          # that in place so the compiler has a body.
-          foreach ($target in @($destInstall, $destUser)) {
-            foreach ($name in @('Trade\Trade.mqh','Trade\PositionInfo.mqh','Trade\OrderInfo.mqh')) {
-              $p = Join-Path $target $name
-              if (-not (Test-Path $p)) { continue }
-              # mskelton/mql5 files are plain ASCII/UTF-8 without BOM —
-              # read/write in UTF-8 so the regex sees real characters
-              # (previous attempt read as UTF-16 → garbled → no match).
-              $text = [System.IO.File]::ReadAllText($p, [System.Text.UTF8Encoding]::new($false))
-              $new  = [Regex]::Replace($text, '(~[A-Za-z_]\w*\(\s*void\s*\))\s*;', '$1 {}')
-              if ($new -ne $text) {
-                [System.IO.File]::WriteAllText($p, $new, [System.Text.UTF8Encoding]::new($false))
-                Write-Host "Patched destructors in $p"
-              } else {
-                Write-Host "::warning::No destructor match in $p — check encoding"
-              }
-            }
-          }
 
       - name: Convert sources to UTF-16 LE + BOM (MetaEditor native)
         shell: pwsh
