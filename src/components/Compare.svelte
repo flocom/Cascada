@@ -95,6 +95,54 @@
     if (pairs.length === 0) addRow();
     applySubscription();
   }
+
+  // Quick-add presets. "Majors" = every cross between the 8 most-traded
+  // currencies (USD, EUR, JPY, GBP, AUD, NZD, CAD, CHF) → 28 pairs, written
+  // in conventional quote order (EUR > GBP > AUD > NZD > USD > CAD > CHF >
+  // JPY). "Metals" = gold + silver. Clicks are idempotent: already-present
+  // pairs are skipped; the first empty row is filled before appending new ones.
+  const MAJORS = [
+    "EURUSD","EURGBP","EURJPY","EURCHF","EURAUD","EURCAD","EURNZD",
+    "GBPUSD","GBPJPY","GBPCHF","GBPAUD","GBPCAD","GBPNZD",
+    "AUDUSD","AUDJPY","AUDCHF","AUDCAD","AUDNZD",
+    "NZDUSD","NZDJPY","NZDCHF","NZDCAD",
+    "USDJPY","USDCHF","USDCAD",
+    "CADJPY","CADCHF",
+    "CHFJPY",
+  ];
+  const METALS = ["XAUUSD","XAGUSD"];
+  function addPreset(list: string[]) {
+    // Bulk-insert in one pass: build the "already-there" set up-front, track
+    // the next empty slot linearly so we don't re-scan `pairs` per symbol,
+    // and commit one reactive assignment at the end (vs N with `addSymbol`
+    // in a loop — matters when "Majors" adds 28 pairs).
+    const existing = new Set<string>();
+    const next = [...pairs];
+    let emptyCursor = 0;
+    for (let i = 0; i < next.length; i++) {
+      const m = next[i].master.trim().toUpperCase();
+      if (m) existing.add(m);
+    }
+    const firstEmpty = () => {
+      while (emptyCursor < next.length && next[emptyCursor].master.trim()) emptyCursor++;
+      return emptyCursor < next.length ? emptyCursor : -1;
+    };
+    for (const sym of list) {
+      const u = sym.trim().toUpperCase();
+      if (!u || existing.has(u)) continue;
+      existing.add(u);
+      const slave = bestSlaveMatch(u) || u;
+      const idx = firstEmpty();
+      if (idx >= 0) {
+        next[idx] = { master: u, slave };
+        emptyCursor = idx + 1;
+      } else {
+        next.push({ master: u, slave });
+      }
+    }
+    pairs = next;
+    applySubscription();
+  }
   function syncSlaveDefault(i: number) {
     // If slave is empty when user types master, pre-fill with the master symbol.
     if (!pairs[i].slave) {
@@ -631,6 +679,19 @@
     </div>
     <div class="footer-row">
       <button class="add-row" on:click={addRow}>+ Add pair</button>
+      <div class="presets">
+        <span class="presets-label">Quick-add:</span>
+        <button class="preset-pill primary"
+                title={`Add the 28 major FX crosses (${MAJORS.length} pairs: all combinations of USD, EUR, JPY, GBP, AUD, NZD, CAD, CHF)`}
+                on:click={() => addPreset(MAJORS)}>
+          + All majors <span class="count">({MAJORS.length})</span>
+        </button>
+        <button class="preset-pill metal"
+                title="Add gold (XAUUSD) and silver (XAGUSD)"
+                on:click={() => addPreset(METALS)}>
+          + Metals <span class="count">({METALS.length})</span>
+        </button>
+      </div>
       <p class="hint">
         Δ = (slave mid − master mid) / pip · positive = slave quotes higher than master.
       </p>
@@ -922,6 +983,33 @@
     border-color: var(--primary); border-style: solid;
   }
   .hint { font-size: 12px; color: var(--text-2); margin: 0; }
+
+  /* ─────────── Quick-add preset chips ─────────── */
+  .presets {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+    flex: 1 1 auto; justify-content: flex-start;
+  }
+  .presets-label { font-size: 11px; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.04em; margin-right: 4px; }
+  .presets-divider {
+    width: 1px; height: 16px; background: var(--border); margin: 0 4px;
+  }
+  .preset-pill {
+    padding: 4px 10px; font-size: 11px; font-weight: 600;
+    border: 1px solid var(--border); border-radius: 999px;
+    background: var(--surface); color: var(--text-2); cursor: pointer;
+    transition: background 0.12s, color 0.12s, border-color 0.12s, transform 0.08s;
+  }
+  .preset-pill:hover {
+    background: #EFF6FF; color: #1D4ED8; border-color: #93C5FD;
+  }
+  .preset-pill:active { transform: translateY(1px); }
+  .preset-pill.primary {
+    background: #EFF6FF; color: #1D4ED8; border-color: #BFDBFE; font-weight: 600;
+  }
+  .preset-pill.primary:hover { background: #DBEAFE; border-color: #60A5FA; }
+  .preset-pill.metal { color: #92400E; border-color: #FDE68A; background: #FFFBEB; font-weight: 600; }
+  .preset-pill.metal:hover { background: #FEF3C7; border-color: #F59E0B; color: #78350F; }
+  .preset-pill .count { opacity: 0.6; font-weight: 500; margin-left: 2px; }
 
   /* ─────────── Capture column ─────────── */
   .capture-col { min-width: 240px; }
