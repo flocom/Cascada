@@ -17,15 +17,16 @@
 </p>
 
 <p align="center">
-  <a href="#-download">Download</a> ·
-  <a href="#-features">Features</a> ·
-  <a href="#-how-it-works">How it works</a> ·
-  <a href="#-quick-start">Quick start</a> ·
-  <a href="#-faq">FAQ</a>
+  <a href="#download">Download</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#faq">FAQ</a>
 </p>
 
 ---
 
+<a id="download"></a>
 ## ⬇️ Download
 
 Pick the installer for your OS. Binaries are built and published automatically for every tagged release.
@@ -38,6 +39,7 @@ Pick the installer for your OS. Binaries are built and published automatically f
 
 > Don't see a platform? Head to [Releases](https://github.com/flocom/Cascada/releases) — every build artifact is attached there.
 
+<a id="running-an-unsigned-build"></a>
 ### 🔐 Running an unsigned build
 
 Cascada is built by GitHub Actions without paid code-signing certificates (Apple Developer ID, Windows Authenticode). Your OS will warn you on first launch — here's how to trust the app once:
@@ -74,6 +76,7 @@ chmod +x Cascada_*.AppImage
 
 ---
 
+<a id="features"></a>
 ## ✨ Features
 
 ### 🔌 Multi-broker, multi-platform
@@ -119,6 +122,7 @@ Every master→slave link is a **rule** with fine-grained control:
 
 ---
 
+<a id="how-it-works"></a>
 ## 🏗 How it works
 
 ```
@@ -144,6 +148,7 @@ No TCP sockets, no DLL, no admin privileges — just a shared folder the EAs and
 
 ---
 
+<a id="quick-start"></a>
 ## 🚴 Quick start
 
 ### 1. Install
@@ -206,6 +211,7 @@ Cascada/
 
 ---
 
+<a id="faq"></a>
 ## ❓ FAQ
 
 **Is this a copy-trading service?**
@@ -221,7 +227,7 @@ Any broker supported by cTrader, MT4 or MT5. Symbol suffixes (EURUSD.r, EURUSDm�
 Per-symbol pip-offset on SL/TP per rule; you can also skip copies if the quote delta is beyond a threshold.
 
 **Is it signed?**
-Not yet — first-run warnings are expected, see the [unsigned-build section](#-running-an-unsigned-build) above for the 10-second bypass on each OS. Code signing is on the roadmap (requires a paid Apple Developer ID and Windows Authenticode cert).
+Not yet — first-run warnings are expected, see the [unsigned-build section](#running-an-unsigned-build) above for the 10-second bypass on each OS. Code signing is on the roadmap (requires a paid Apple Developer ID and Windows Authenticode cert).
 
 **Why open-source?**
 Copy-trading infrastructure shouldn't be a black box. If it routes your orders, you should be able to read its code.

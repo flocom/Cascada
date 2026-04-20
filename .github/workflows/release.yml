@@ -82,7 +82,7 @@ jobs:
             - **Windows** → SmartScreen: *More info* → *Run anyway*.
             - **Linux** AppImage → `chmod +x Cascada_*.AppImage && ./Cascada_*.AppImage`.
 
-            Full install walk-through: see the [README](https://github.com/flocom/Cascada#-running-an-unsigned-build).
+            Full install walk-through: see the [README](https://github.com/flocom/Cascada#running-an-unsigned-build).
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
