@@ -178,6 +178,11 @@ jobs:
           set -e
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # The UTF-16 conversion step mutated the .mq4/.mq5 sources in
+          # the workspace — those aren't meant to go back into the repo
+          # (source stays UTF-8 on disk). Reset them before the rebase
+          # so `git pull --rebase` doesn't choke on unstaged changes.
+          git checkout -- ea/mt5/CascadaBridge.mq5 ea/mt4/CascadaBridge.mq4
           git add ea/mt5/compiled/CascadaBridge.ex5 ea/mt4/compiled/CascadaBridge.ex4
           if git diff --staged --quiet; then
             echo "No binary change — skipping commit."
