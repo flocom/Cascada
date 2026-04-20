@@ -1,6 +1,6 @@
 {
   "name": "cascada",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Copy trading desktop app (cTrader / MT4 / MT5)",
   "type": "module",
   "scripts": {
