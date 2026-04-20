@@ -34,38 +34,39 @@ jobs:
             -UseBasicParsing
           Write-Host "Downloaded $( (Get-Item mt5setup.exe).Length ) bytes"
 
-      - name: Silent-install MT5
+      - name: Install MT5 (file-watch, no wait)
         shell: pwsh
         run: |
-          # MT5 setup is an Inno Setup installer — /VERYSILENT suppresses
-          # dialogs, /NORESTART avoids a reboot prompt.
-          $p = Start-Process -FilePath '.\mt5setup.exe' `
-                             -ArgumentList '/VERYSILENT','/NORESTART' `
-                             -PassThru -Wait
-          Write-Host "Installer exit code: $($p.ExitCode)"
-          # Installer auto-launches terminal64.exe — kill it before metaeditor
-          # runs so it doesn't hold handles on MQL5\Include.
-          Get-Process -Name terminal64 -ErrorAction SilentlyContinue | Stop-Process -Force
-
-      - name: Seed MQL5 includes by launching terminal once
-        shell: pwsh
-        run: |
-          # First launch populates C:\Program Files\MetaTrader 5\MQL5\Include
-          # with Trade\Trade.mqh etc. We wait ~15 s then kill — long enough for
-          # the terminal to unpack its includes, short enough to keep CI cheap.
-          $t = 'C:\Program Files\MetaTrader 5\terminal64.exe'
-          if (Test-Path $t) {
-            Start-Process -FilePath $t -ArgumentList '/portable' -PassThru | Out-Null
-            Start-Sleep -Seconds 15
-            Get-Process -Name terminal64 -ErrorAction SilentlyContinue | Stop-Process -Force
+          # MT5 setup is Inno Setup — /VERYSILENT installs without dialogs.
+          # We don't Wait on the process because the installer spawns
+          # terminal64.exe at the end which stays alive indefinitely on
+          # headless runners (waiting for a demo-account signup that never
+          # comes). Instead: poll the filesystem until metaeditor lands,
+          # then force-kill everything MT-related.
+          $me  = 'C:\Program Files\MetaTrader 5\metaeditor64.exe'
+          $inc = 'C:\Program Files\MetaTrader 5\MQL5\Include\Trade\Trade.mqh'
+          Start-Process -FilePath '.\mt5setup.exe' -ArgumentList '/VERYSILENT','/NORESTART' | Out-Null
+          $deadline = (Get-Date).AddMinutes(5)
+          while (-not (Test-Path $me) -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 3
           }
-          $inc = 'C:\Program Files\MetaTrader 5\MQL5\Include'
+          if (-not (Test-Path $me)) {
+            throw "metaeditor64.exe never appeared after 5 min — installer stuck"
+          }
+          Write-Host "metaeditor64.exe landed after $((New-TimeSpan -Start (Get-Date).AddMinutes(-5) -End (Get-Date)).TotalSeconds)s"
+          # Wait a bit more so terminal64 has time to unpack MQL5\Include\Trade
+          $incDeadline = (Get-Date).AddMinutes(2)
+          while (-not (Test-Path $inc) -and (Get-Date) -lt $incDeadline) {
+            Start-Sleep -Seconds 3
+          }
           if (Test-Path $inc) {
-            Write-Host "Include dir OK, contents:"
-            Get-ChildItem -Path $inc -Depth 1 | Select-Object -First 20 | Format-Table -AutoSize
+            Write-Host "Trade\Trade.mqh present — includes OK"
           } else {
-            Write-Host "::warning::MQL5\Include still missing after terminal seed"
+            Write-Host "::warning::Trade\Trade.mqh still missing; compile may fail on includes"
           }
+          # Kill lingering MT processes so nothing holds file handles.
+          Get-Process -Name mt5setup,terminal64,metaeditor64 -ErrorAction SilentlyContinue `
+            | Stop-Process -Force
 
       - name: Locate metaeditor64.exe
         id: loc
