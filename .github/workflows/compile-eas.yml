@@ -1,12 +1,19 @@
 name: Compile EAs
 
-# Wine-based MT install on ubuntu-latest, driven by an Ansible role that
-# handles the stdlib + includes unpack step headless (the Windows installer
-# silently no-ops on that step because the terminal never completes its
-# broker-server handshake on a CI runner). Same recipe EA31337 uses for
-# their own MT4/MT5 EA compilation.
+# windows-latest + official MetaQuotes installer. The 5 gotchas:
+#   1. /auto installs silently (NOT Inno Setup — custom wrapper).
+#   2. metaeditor64.exe is a GUI app: `& editor ...` returns IMMEDIATELY.
+#      Use `Start-Process -Wait -PassThru -NoNewWindow` so PowerShell
+#      actually blocks until compile exits — otherwise the next step
+#      reads `.ex5` before it's been written.
+#   3. Exit code = (errors + warnings), not 0/1. Don't fail on non-zero;
+#      Test-Path the expected output binary instead.
+#   4. MetaEditor's log file is UTF-16 LE + BOM. `Get-Content` defaults
+#      to ANSI and garbles it. Use `-Encoding Unicode -Raw`.
+#   5. Pass args as a string array with backslash paths.
 #
-# cTrader `.algo` stays manual — Spotware only ships build via Automate UI.
+# MetaEditor that ships with MT5 compiles both .mq5 AND .mq4, so one
+# install covers both jobs. cTrader `.algo` stays manual (Spotware UI).
 
 on:
   push:
@@ -20,91 +27,88 @@ permissions:
   contents: write
 
 jobs:
-  compile-mt5:
-    runs-on: ubuntu-latest
+  compile:
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install MT5 (Wine) via Ansible
-        uses: dawidd6/action-ansible-playbook@v2
-        with:
-          playbook: install-mt5.yml
-          directory: ansible-setup
-          options: |
-            --connection local
-            --inventory localhost,
-          requirements: galaxy-requirements.yml
+      - name: Download MT5 setup
+        shell: pwsh
+        run: |
+          Invoke-WebRequest `
+            -Uri 'https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe' `
+            -OutFile 'mt5setup.exe' `
+            -UseBasicParsing
+
+      - name: Silent-install MT5 (/auto)
+        shell: pwsh
+        run: |
+          Start-Process -FilePath '.\mt5setup.exe' -ArgumentList '/auto' -Wait
+          # Installer spawns terminal64 — kill it so it doesn't hold
+          # handles on MQL5\Include while metaeditor compiles.
+          Get-Process -Name terminal64 -ErrorAction SilentlyContinue | Stop-Process -Force
+          if (-not (Test-Path 'C:\Program Files\MetaTrader 5\metaeditor64.exe')) {
+            throw 'metaeditor64.exe missing — install failed'
+          }
 
       - name: Compile CascadaBridge.mq5 → .ex5
-        uses: fx31337/mql-compile-action@dev
-        with:
-          path: ea/mt5/CascadaBridge.mq5
-          mt-path: ${{ github.workspace }}/../../../.wine/drive_c
-          verbose: true
-
-      - name: Stage + commit .ex5
+        shell: pwsh
         run: |
-          set -e
-          mkdir -p ea/mt5/compiled
-          if [ ! -f ea/mt5/CascadaBridge.ex5 ]; then
-            echo "::error::No .ex5 produced"
-            exit 1
-          fi
-          mv -f ea/mt5/CascadaBridge.ex5 ea/mt5/compiled/CascadaBridge.ex5
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ea/mt5/compiled/CascadaBridge.ex5
-          if git diff --staged --quiet; then
-            echo "No change in .ex5"
-          else
-            git commit -m "ci: recompile CascadaBridge.ex5 [skip ci]"
-            git pull --rebase origin "${GITHUB_REF_NAME}"
-            git push origin HEAD:"${GITHUB_REF_NAME}"
-          fi
-
-  compile-mt4:
-    runs-on: ubuntu-latest
-    needs: compile-mt5
-    if: ${{ !cancelled() }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Pull any commits the MT5 job pushed
-        run: git pull --rebase origin "${GITHUB_REF_NAME}"
-
-      - name: Install MT4 (Wine) via Ansible
-        uses: dawidd6/action-ansible-playbook@v2
-        with:
-          playbook: install-mt4.yml
-          directory: ansible-setup
-          options: |
-            --connection local
-            --inventory localhost,
-          requirements: galaxy-requirements.yml
+          $editor = 'C:\Program Files\MetaTrader 5\metaeditor64.exe'
+          $src    = Join-Path $PWD 'ea\mt5\CascadaBridge.mq5'
+          $log    = Join-Path $PWD 'mq5.log'
+          # metaeditor is a GUI app — -Wait is MANDATORY, otherwise
+          # PowerShell returns before the compile is done.
+          $p = Start-Process -FilePath $editor `
+                             -ArgumentList "/compile:$src","/log:$log" `
+                             -Wait -PassThru -NoNewWindow
+          Write-Host "metaeditor exit code: $($p.ExitCode) (= warnings+errors; check .ex5 for real status)"
+          if (Test-Path $log) {
+            Write-Host "--- metaeditor log ---"
+            Get-Content -Path $log -Encoding Unicode -Raw
+          }
+          if (-not (Test-Path 'ea\mt5\CascadaBridge.ex5')) {
+            throw 'compile failed: no .ex5 produced'
+          }
 
       - name: Compile CascadaBridge.mq4 → .ex4
-        uses: fx31337/mql-compile-action@dev
-        with:
-          path: ea/mt4/CascadaBridge.mq4
-          mt-path: ${{ github.workspace }}/../../../.wine/drive_c
-          verbose: true
+        shell: pwsh
+        run: |
+          $editor = 'C:\Program Files\MetaTrader 5\metaeditor64.exe'
+          $src    = Join-Path $PWD 'ea\mt4\CascadaBridge.mq4'
+          $log    = Join-Path $PWD 'mq4.log'
+          $p = Start-Process -FilePath $editor `
+                             -ArgumentList "/compile:$src","/log:$log" `
+                             -Wait -PassThru -NoNewWindow
+          Write-Host "metaeditor exit code: $($p.ExitCode)"
+          if (Test-Path $log) {
+            Write-Host "--- metaeditor log ---"
+            Get-Content -Path $log -Encoding Unicode -Raw
+          }
+          if (-not (Test-Path 'ea\mt4\CascadaBridge.ex4')) {
+            throw 'compile failed: no .ex4 produced'
+          }
 
-      - name: Stage + commit .ex4
+      - name: Stage compiled binaries
+        shell: bash
         run: |
           set -e
-          mkdir -p ea/mt4/compiled
-          if [ ! -f ea/mt4/CascadaBridge.ex4 ]; then
-            echo "::error::No .ex4 produced"
-            exit 1
-          fi
+          mkdir -p ea/mt5/compiled ea/mt4/compiled
+          mv -f ea/mt5/CascadaBridge.ex5 ea/mt5/compiled/CascadaBridge.ex5
           mv -f ea/mt4/CascadaBridge.ex4 ea/mt4/compiled/CascadaBridge.ex4
+
+      - name: Commit + push if changed
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -e
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ea/mt4/compiled/CascadaBridge.ex4
+          git add ea/mt5/compiled/CascadaBridge.ex5 ea/mt4/compiled/CascadaBridge.ex4
           if git diff --staged --quiet; then
-            echo "No change in .ex4"
-          else
-            git commit -m "ci: recompile CascadaBridge.ex4 [skip ci]"
-            git pull --rebase origin "${GITHUB_REF_NAME}"
-            git push origin HEAD:"${GITHUB_REF_NAME}"
+            echo "No binary change — skipping commit."
+            exit 0
           fi
+          git commit -m "ci: recompile CascadaBridge.ex4 / .ex5 [skip ci]"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin HEAD:"${GITHUB_REF_NAME}"
