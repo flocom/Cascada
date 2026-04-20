@@ -37,12 +37,35 @@ jobs:
       - name: Silent-install MT5
         shell: pwsh
         run: |
-          # /auto = silent install to default path (Program Files\MetaTrader 5)
-          $p = Start-Process -FilePath '.\mt5setup.exe' -ArgumentList '/auto' -PassThru -Wait
+          # MT5 setup is an Inno Setup installer — /VERYSILENT suppresses
+          # dialogs, /NORESTART avoids a reboot prompt.
+          $p = Start-Process -FilePath '.\mt5setup.exe' `
+                             -ArgumentList '/VERYSILENT','/NORESTART' `
+                             -PassThru -Wait
           Write-Host "Installer exit code: $($p.ExitCode)"
-          # Installer spawns terminal64.exe at the end — kill it so it doesn't
-          # hold any handles while we run metaeditor.
+          # Installer auto-launches terminal64.exe — kill it before metaeditor
+          # runs so it doesn't hold handles on MQL5\Include.
           Get-Process -Name terminal64 -ErrorAction SilentlyContinue | Stop-Process -Force
+
+      - name: Seed MQL5 includes by launching terminal once
+        shell: pwsh
+        run: |
+          # First launch populates C:\Program Files\MetaTrader 5\MQL5\Include
+          # with Trade\Trade.mqh etc. We wait ~15 s then kill — long enough for
+          # the terminal to unpack its includes, short enough to keep CI cheap.
+          $t = 'C:\Program Files\MetaTrader 5\terminal64.exe'
+          if (Test-Path $t) {
+            Start-Process -FilePath $t -ArgumentList '/portable' -PassThru | Out-Null
+            Start-Sleep -Seconds 15
+            Get-Process -Name terminal64 -ErrorAction SilentlyContinue | Stop-Process -Force
+          }
+          $inc = 'C:\Program Files\MetaTrader 5\MQL5\Include'
+          if (Test-Path $inc) {
+            Write-Host "Include dir OK, contents:"
+            Get-ChildItem -Path $inc -Depth 1 | Select-Object -First 20 | Format-Table -AutoSize
+          } else {
+            Write-Host "::warning::MQL5\Include still missing after terminal seed"
+          }
 
       - name: Locate metaeditor64.exe
         id: loc
@@ -69,8 +92,12 @@ jobs:
           # /s = syntax only? no — in MetaEditor CLI there's no silent flag;
           # metaeditor always writes logs to /log path. Exit code is 0 on
           # warnings-only, non-zero on errors. We check the .ex5 presence.
-          & $me /compile:"$src" /log:"$log"
-          if (Test-Path $log) { Get-Content $log }
+          # metaeditor writes its log next to the source as `<name>.log`.
+          # /log enables that file; no path argument is supported.
+          & $me /compile:"$src" /log
+          $autoLog = [IO.Path]::ChangeExtension($src, '.log')
+          if (Test-Path $autoLog) { Write-Host "--- metaeditor log ---"; Get-Content $autoLog }
+          elseif (Test-Path $log) { Write-Host "--- log ---"; Get-Content $log }
           if (-not (Test-Path "$pwd\ea\mt5\CascadaBridge.ex5")) {
             throw 'compilation failed: no .ex5 produced'
           }
@@ -81,8 +108,12 @@ jobs:
           $me  = '${{ steps.loc.outputs.path }}'
           $src = "$pwd\ea\mt4\CascadaBridge.mq4"
           $log = "$pwd\mq4.log"
-          & $me /compile:"$src" /log:"$log"
-          if (Test-Path $log) { Get-Content $log }
+          # metaeditor writes its log next to the source as `<name>.log`.
+          # /log enables that file; no path argument is supported.
+          & $me /compile:"$src" /log
+          $autoLog = [IO.Path]::ChangeExtension($src, '.log')
+          if (Test-Path $autoLog) { Write-Host "--- metaeditor log ---"; Get-Content $autoLog }
+          elseif (Test-Path $log) { Write-Host "--- log ---"; Get-Content $log }
           if (-not (Test-Path "$pwd\ea\mt4\CascadaBridge.ex4")) {
             throw 'compilation failed: no .ex4 produced'
           }
