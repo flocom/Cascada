@@ -3,8 +3,8 @@
   roles:
     - role: ea31337.metatrader
       vars:
-        # Community-mirrored MT4 installer — MetaQuotes stopped hosting a
-        # generic MT4 setup years ago, brokers ship their own instead.
-        # This URL is the one EA31337's own CI uses.
-        metatrader_setup_url: https://download.mql5.com/cdn/mt4/mt4setup.exe
+        # XM Global's MT4 setup — MetaQuotes hosts it on their CDN and
+        # EA31337 uses it in their own CI (MetaQuotes stopped hosting
+        # a generic mt4setup.exe years ago).
+        metatrader_setup_url: https://download.mql5.com/cdn/web/3315/mt4/xm4setup.exe
         metatrader_version: 4
