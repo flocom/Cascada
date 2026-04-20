@@ -17,6 +17,11 @@ name: Compile EAs
 
 on:
   push:
+    # Only fire on branch pushes (not tag pushes) — a tag push like
+    # v0.1.8 would otherwise re-run this job, which then fails trying
+    # to `git push HEAD:v0.1.8` (tags aren't updatable branches).
+    branches:
+      - main
     paths:
       - 'ea/mt4/CascadaBridge.mq4'
       - 'ea/mt5/CascadaBridge.mq5'
