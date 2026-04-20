@@ -51,6 +51,23 @@ jobs:
             throw 'metaeditor64.exe missing — install failed'
           }
 
+      - name: Convert sources to UTF-16 LE + BOM (MetaEditor native)
+        shell: pwsh
+        run: |
+          # MetaEditor defaults to ANSI/CP1252 when no BOM is present. Our
+          # sources use em-dashes (—) in comments, which are 3-byte UTF-8
+          # sequences. Read as ANSI they shift column indexes → the parser
+          # reports bogus "unexpected token" errors on perfectly valid MQL.
+          # Rewriting in UTF-16 LE with BOM = MetaEditor's own save format,
+          # zero ambiguity.
+          foreach ($path in @('ea\mt5\CascadaBridge.mq5', 'ea\mt4\CascadaBridge.mq4')) {
+            $full    = Join-Path $PWD $path
+            $content = Get-Content -Path $full -Raw -Encoding UTF8
+            $u16bom  = New-Object System.Text.UnicodeEncoding($false, $true)
+            [System.IO.File]::WriteAllText($full, $content, $u16bom)
+            Write-Host "Re-encoded $path ($(((Get-Item $full).Length)) bytes)"
+          }
+
       - name: Compile CascadaBridge.mq5 → .ex5
         shell: pwsh
         run: |
