@@ -86,6 +86,8 @@ export interface Quote {
   symbol: string;
   bid: number;
   ask: number;
+  /// Broker-reported pip size. 0/undefined when the EA hasn't been upgraded.
+  pip_size?: number;
   ts: number;
 }
 

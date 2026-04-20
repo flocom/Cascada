@@ -622,10 +622,11 @@ void PushQuotes()
       double ask = MarketInfo(sym, MODE_ASK);
       if(bid <= 0 || ask <= 0) continue;
       string body =
-         "\"symbol\":\"" + Esc(sym) + "\"" +
-         ",\"bid\":"     + F5(bid) +
-         ",\"ask\":"     + F5(ask) +
-         ",\"ts\":"      + IntegerToString(now);
+         "\"symbol\":\""  + Esc(sym) + "\"" +
+         ",\"bid\":"      + F5(bid) +
+         ",\"ask\":"      + F5(ask) +
+         ",\"pip_size\":" + F5(PipSize(sym)) +
+         ",\"ts\":"       + IntegerToString(now);
       WriteEvent("quote", body);
    }
 }

@@ -126,6 +126,7 @@ pub enum S2C {
         symbol: String,
         bid: f64,
         ask: f64,
+        #[serde(default)] pip_size: f64,
         #[serde(default)] ts: i64,
     },
     Symbols { symbols: Vec<String> },
@@ -184,9 +185,9 @@ pub fn dispatch(account: &Account, msg: S2C, events: &mpsc::UnboundedSender<Conn
             emit_log(events, id, LogLevel::Info, format!("history snapshot: {count} trades")),
         S2C::Pong { .. } => {}
         S2C::Log { level, message } => emit_log(events, id, level, message),
-        S2C::Quote { symbol, bid, ask, ts } => {
+        S2C::Quote { symbol, bid, ask, pip_size, ts } => {
             let _ = events.send(ConnectorEvent::Quote(Quote {
-                account_id: id.clone(), symbol, bid, ask,
+                account_id: id.clone(), symbol, bid, ask, pip_size,
                 ts: if ts > 0 { ts } else { chrono::Utc::now().timestamp_millis() },
             }));
         }

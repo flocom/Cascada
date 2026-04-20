@@ -667,10 +667,11 @@ void PushQuotes()
       if(!SymbolInfoTick(sym, tick)) continue;
       if(tick.bid <= 0 || tick.ask <= 0) continue;
       string body =
-         "\"symbol\":\"" + Esc(sym) + "\"" +
-         ",\"bid\":"     + F5(tick.bid) +
-         ",\"ask\":"     + F5(tick.ask) +
-         ",\"ts\":"      + IntegerToString(now);
+         "\"symbol\":\""  + Esc(sym) + "\"" +
+         ",\"bid\":"      + F5(tick.bid) +
+         ",\"ask\":"      + F5(tick.ask) +
+         ",\"pip_size\":" + F5(PipSize(sym)) +
+         ",\"ts\":"       + IntegerToString(now);
       WriteEvent("quote", body);
    }
 }

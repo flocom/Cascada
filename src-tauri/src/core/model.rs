@@ -150,6 +150,10 @@ pub struct Quote {
     pub symbol: String,
     pub bid: f64,
     pub ask: f64,
+    /// Broker-provided pip size. 0 when the EA hasn't been upgraded — the
+    /// frontend falls back to a symbol-name heuristic in that case.
+    #[serde(default)]
+    pub pip_size: f64,
     pub ts: i64,
 }
 

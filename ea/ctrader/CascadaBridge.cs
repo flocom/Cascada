@@ -432,8 +432,8 @@ namespace cAlgo.Robots
                 double bid = sym.Bid, ask = sym.Ask;
                 if (bid <= 0 || ask <= 0) continue;
                 WriteEvent("quote", string.Format(Inv,
-                    "\"symbol\":\"{0}\",\"bid\":{1},\"ask\":{2},\"ts\":{3}",
-                    Esc(name), F(bid), F(ask), Now()));
+                    "\"symbol\":\"{0}\",\"bid\":{1},\"ask\":{2},\"pip_size\":{3},\"ts\":{4}",
+                    Esc(name), F(bid), F(ask), F(sym.PipSize), Now()));
             }
         }
 

@@ -48,19 +48,29 @@
   $: masterSymbols = symbolsByAccount.get(masterId) ?? [];
   $: slaveSymbols  = symbolsByAccount.get(slaveId)  ?? [];
 
-  // Memoize per-symbol pip size — each quote tick calls diffPips() which hits
-  // this for every pair, and `toUpperCase()` + three substring tests is wasted
-  // work when the symbol set is tiny and stable.
-  const pipSizeCache = new Map<string, number>();
-  function pipSize(sym: string): number {
-    let v = pipSizeCache.get(sym);
+  // Memoize the name-based heuristic fallback used when a broker quote hasn't
+  // arrived yet (or predates the EA's pip_size plumbing). Covers indices and
+  // crypto so US500 / US30 / BTCUSD don't fall through to the 0.0001 forex
+  // default — a 5-pt move on US500 at pip=0.0001 reports as 50 000 pips.
+  const pipHeurCache = new Map<string, number>();
+  function pipHeuristic(sym: string): number {
+    let v = pipHeurCache.get(sym);
     if (v !== undefined) return v;
     const s = sym.toUpperCase();
-    v = s.includes("JPY") ? 0.01
-      : s.startsWith("XAU") || s.startsWith("XAG") ? 0.1
-      : 0.0001;
-    pipSizeCache.set(sym, v);
+    if (s.includes("JPY")) v = 0.01;
+    else if (s.startsWith("XAU") || s.startsWith("XAG")) v = 0.1;
+    else if (/(?:^|\.)(?:US500|SPX500|SPX|US30|DJ30|NAS100|NAS|USTEC|GER40|GER30|DAX|UK100|FTSE|JP225|NIKKEI|FR40|CAC|AUS200|HK50|EU50|STOXX)(?:\.|$)/.test(s)) v = 1.0;
+    else if (/^(?:BTC|ETH|XRP|LTC|BCH|ADA|DOT|SOL|DOGE|AVAX|MATIC|LINK)(?:USD|USDT|EUR)?/.test(s)) v = 1.0;
+    else v = 0.0001;
+    pipHeurCache.set(sym, v);
     return v;
+  }
+  /// Prefer the broker-provided pip size riding on each quote — it's the
+  /// authoritative value (maps Digits/Point per-broker). Fall back to the
+  /// name heuristic only while quotes haven't landed yet.
+  function pipOf(sym: string, q?: Quote): number {
+    if (q && q.pip_size && q.pip_size > 0) return q.pip_size;
+    return pipHeuristic(sym);
   }
 
   function key(accountId: string, sym: string) {
@@ -77,12 +87,15 @@
     const s = getQuote(slaveId,  p.slave || p.master);
     if (!m || !s) return null;
     const mid = (a: Quote) => (a.bid + a.ask) / 2;
-    return (mid(s) - mid(m)) / pipSize(p.master);
+    // Use the master's pip size so the sign + magnitude are anchored on the
+    // reference side; fall back to the slave's if the master hasn't reported
+    // one yet (shouldn't happen, but defensive).
+    return (mid(s) - mid(m)) / (pipOf(p.master, m) || pipOf(p.slave || p.master, s));
   }
 
   function spreadPips(q: Quote | undefined, sym: string): number | null {
     if (!q || !sym) return null;
-    return (q.ask - q.bid) / pipSize(sym);
+    return (q.ask - q.bid) / pipOf(sym, q);
   }
 
   function fmt(n: number | null | undefined, d = 5) {
