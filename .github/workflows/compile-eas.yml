@@ -81,6 +81,25 @@ jobs:
           Copy-Item -Path "$srcInc\*" -Destination $destUser -Recurse -Force
           Write-Host "Seeded $destUser"
 
+          # mskelton/mql5 is a 2023 snapshot; its CTrade / CPositionInfo /
+          # COrderInfo destructors are declared as `~C…(void);` without an
+          # inline body, but the .cpp bodies that used to live in MT5 are
+          # not shipped. Modern MT5 headers use `~C…(void) {}` inline; patch
+          # that in place so the compiler has a body.
+          foreach ($target in @($destInstall, $destUser)) {
+            foreach ($name in @('Trade\Trade.mqh','Trade\PositionInfo.mqh','Trade\OrderInfo.mqh')) {
+              $p = Join-Path $target $name
+              if (-not (Test-Path $p)) { continue }
+              # Files are UTF-16 LE with BOM — read/write with the matching encoding.
+              $text = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::Unicode)
+              $new  = [Regex]::Replace($text, '(~[A-Za-z_]\w*\(\s*void\s*\))\s*;', '$1 {}')
+              if ($new -ne $text) {
+                [System.IO.File]::WriteAllText($p, $new, [System.Text.UnicodeEncoding]::new($false, $true))
+                Write-Host "Patched destructors in $p"
+              }
+            }
+          }
+
       - name: Convert sources to UTF-16 LE + BOM (MetaEditor native)
         shell: pwsh
         run: |
