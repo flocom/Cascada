@@ -120,10 +120,35 @@ jobs:
             throw 'compile failed: no .ex5 produced'
           }
 
+      - name: Download + silent-install MT4 (XM setup — MetaQuotes CDN)
+        shell: pwsh
+        run: |
+          # MetaEditor v5 cannot compile MQL4 (parses it in MQL5 mode, 102
+          # errors on OrderTicket/OP_SELL/etc). MT4 needs its own metaeditor.exe.
+          # MetaQuotes stopped hosting a generic mt4setup.exe — XM Global's
+          # is still mirrored on MetaQuotes CDN and installs headless fine.
+          Invoke-WebRequest -Uri 'https://download.mql5.com/cdn/web/3315/mt4/xm4setup.exe' `
+                            -OutFile 'mt4setup.exe' -UseBasicParsing
+          Start-Process -FilePath '.\mt4setup.exe' -ArgumentList '/auto' -Wait
+          Get-Process -Name terminal -ErrorAction SilentlyContinue | Stop-Process -Force
+
+      - name: Locate MT4 metaeditor
+        id: mt4editor
+        shell: pwsh
+        run: |
+          $found = Get-ChildItem -Path 'C:\Program Files (x86)','C:\Program Files' `
+                                 -Recurse -Filter 'metaeditor.exe' `
+                                 -ErrorAction SilentlyContinue `
+                   | Where-Object { $_.FullName -notmatch 'MetaTrader 5' } `
+                   | Select-Object -First 1
+          if (-not $found) { throw 'MT4 metaeditor.exe not found' }
+          Write-Host "MT4 MetaEditor: $($found.FullName)"
+          "path=$($found.FullName)" >> $env:GITHUB_OUTPUT
+
       - name: Compile CascadaBridge.mq4 → .ex4
         shell: pwsh
         run: |
-          $editor = 'C:\Program Files\MetaTrader 5\metaeditor64.exe'
+          $editor = '${{ steps.mt4editor.outputs.path }}'
           $src    = Join-Path $PWD 'ea\mt4\CascadaBridge.mq4'
           $log    = Join-Path $PWD 'mq4.log'
           $p = Start-Process -FilePath $editor `
