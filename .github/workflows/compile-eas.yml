@@ -1,113 +1,111 @@
 name: Compile EAs
 
-# Auto-compile the MQL4 and MQL5 sources whenever they change, so the
-# pre-compiled `.ex4` / `.ex5` in `ea/*/compiled/` stay in sync with the
-# source the end-user app ships. Each job:
-#   1. Downloads the corresponding MetaTrader terminal (silent install)
-#   2. Invokes metaeditor in CLI mode (`/compile`)
-#   3. Commits the resulting binary back to `ea/<plat>/compiled/`
-# Commits use `[skip ci]` so the push doesn't retrigger this workflow.
+# Auto-compile MQL4 and MQL5 sources whenever they change. MetaEditor that
+# ships with MT5 compiles both `.mq5` and `.mq4`, so we install MT5 once per
+# runner and use its `metaeditor64.exe` for both jobs. Output is committed
+# back to `ea/<plat>/compiled/` with `[skip ci]` so we don't re-trigger.
 #
-# cTrader's `.algo` is not auto-built here: Spotware doesn't ship a headless
-# build path that produces a signed `.algo` — it has to come out of cTrader
-# Automate's UI. We keep `ea/ctrader/prebuilt/CascadaBridge.algo` manually.
+# cTrader's `.algo` is not auto-built — Spotware only ships build through the
+# Automate UI. The prebuilt stays manually maintained in ea/ctrader/prebuilt/.
 
 on:
   push:
     paths:
       - 'ea/mt4/CascadaBridge.mq4'
       - 'ea/mt5/CascadaBridge.mq5'
+      - '.github/workflows/compile-eas.yml'
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  compile-mt5:
+  compile:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Compile CascadaBridge.mq5
-        uses: fx31337/mql-compile-action@master
-        with:
-          path: ea/mt5/CascadaBridge.mq5
-          init-platform: true
-          verbose: true
+      - name: Download MT5 setup
+        shell: pwsh
+        run: |
+          Invoke-WebRequest `
+            -Uri 'https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe' `
+            -OutFile 'mt5setup.exe' `
+            -UseBasicParsing
+          Write-Host "Downloaded $( (Get-Item mt5setup.exe).Length ) bytes"
 
-      - name: Move .ex5 into compiled/
+      - name: Silent-install MT5
+        shell: pwsh
+        run: |
+          # /auto = silent install to default path (Program Files\MetaTrader 5)
+          $p = Start-Process -FilePath '.\mt5setup.exe' -ArgumentList '/auto' -PassThru -Wait
+          Write-Host "Installer exit code: $($p.ExitCode)"
+          # Installer spawns terminal64.exe at the end — kill it so it doesn't
+          # hold any handles while we run metaeditor.
+          Get-Process -Name terminal64 -ErrorAction SilentlyContinue | Stop-Process -Force
+
+      - name: Locate metaeditor64.exe
+        id: loc
+        shell: pwsh
+        run: |
+          $candidates = @(
+            'C:\Program Files\MetaTrader 5\metaeditor64.exe',
+            'C:\Program Files (x86)\MetaTrader 5\metaeditor64.exe'
+          )
+          $found = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $found) {
+            $found = (Get-ChildItem -Path 'C:\' -Recurse -Filter 'metaeditor64.exe' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          }
+          if (-not $found) { throw 'metaeditor64.exe not found anywhere' }
+          Write-Host "MetaEditor: $found"
+          "path=$found" >> $env:GITHUB_OUTPUT
+
+      - name: Compile MQL5 → .ex5
+        shell: pwsh
+        run: |
+          $me  = '${{ steps.loc.outputs.path }}'
+          $src = "$pwd\ea\mt5\CascadaBridge.mq5"
+          $log = "$pwd\mq5.log"
+          # /s = syntax only? no — in MetaEditor CLI there's no silent flag;
+          # metaeditor always writes logs to /log path. Exit code is 0 on
+          # warnings-only, non-zero on errors. We check the .ex5 presence.
+          & $me /compile:"$src" /log:"$log"
+          if (Test-Path $log) { Get-Content $log }
+          if (-not (Test-Path "$pwd\ea\mt5\CascadaBridge.ex5")) {
+            throw 'compilation failed: no .ex5 produced'
+          }
+
+      - name: Compile MQL4 → .ex4
+        shell: pwsh
+        run: |
+          $me  = '${{ steps.loc.outputs.path }}'
+          $src = "$pwd\ea\mt4\CascadaBridge.mq4"
+          $log = "$pwd\mq4.log"
+          & $me /compile:"$src" /log:"$log"
+          if (Test-Path $log) { Get-Content $log }
+          if (-not (Test-Path "$pwd\ea\mt4\CascadaBridge.ex4")) {
+            throw 'compilation failed: no .ex4 produced'
+          }
+
+      - name: Stage compiled binaries
         shell: bash
         run: |
           set -e
-          mkdir -p ea/mt5/compiled
-          if [ -f ea/mt5/CascadaBridge.ex5 ]; then
-            mv -f ea/mt5/CascadaBridge.ex5 ea/mt5/compiled/CascadaBridge.ex5
-            echo "compiled_ok=1" >> "$GITHUB_ENV"
-          else
-            echo "::warning::metaeditor produced no .ex5 — compilation likely failed"
-            exit 1
-          fi
+          mkdir -p ea/mt5/compiled ea/mt4/compiled
+          mv -f ea/mt5/CascadaBridge.ex5 ea/mt5/compiled/CascadaBridge.ex5
+          mv -f ea/mt4/CascadaBridge.ex4 ea/mt4/compiled/CascadaBridge.ex4
 
-      - name: Commit result
-        if: env.compiled_ok == '1'
+      - name: Commit + push if changed
         shell: bash
         run: |
           set -e
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ea/mt5/compiled/CascadaBridge.ex5
+          git add ea/mt5/compiled/CascadaBridge.ex5 ea/mt4/compiled/CascadaBridge.ex4
           if git diff --staged --quiet; then
-            echo "No change in .ex5"
-          else
-            git commit -m "ci: recompile CascadaBridge.ex5 [skip ci]"
-            git pull --rebase origin "${GITHUB_REF_NAME}"
-            git push origin HEAD:"${GITHUB_REF_NAME}"
+            echo "No binary change — skipping commit."
+            exit 0
           fi
-
-  compile-mt4:
-    runs-on: windows-latest
-    # Run after MT5 so they don't race on git-push of the same branch.
-    needs: compile-mt5
-    if: ${{ !cancelled() }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Pull any commits MT5 job pushed
-        shell: bash
-        run: git pull --rebase origin "${GITHUB_REF_NAME}"
-
-      - name: Compile CascadaBridge.mq4
-        uses: fx31337/mql-compile-action@master
-        with:
-          path: ea/mt4/CascadaBridge.mq4
-          init-platform: true
-          verbose: true
-
-      - name: Move .ex4 into compiled/
-        shell: bash
-        run: |
-          set -e
-          mkdir -p ea/mt4/compiled
-          if [ -f ea/mt4/CascadaBridge.ex4 ]; then
-            mv -f ea/mt4/CascadaBridge.ex4 ea/mt4/compiled/CascadaBridge.ex4
-            echo "compiled_ok=1" >> "$GITHUB_ENV"
-          else
-            echo "::warning::metaeditor produced no .ex4 — compilation likely failed"
-            exit 1
-          fi
-
-      - name: Commit result
-        if: env.compiled_ok == '1'
-        shell: bash
-        run: |
-          set -e
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ea/mt4/compiled/CascadaBridge.ex4
-          if git diff --staged --quiet; then
-            echo "No change in .ex4"
-          else
-            git commit -m "ci: recompile CascadaBridge.ex4 [skip ci]"
-            git pull --rebase origin "${GITHUB_REF_NAME}"
-            git push origin HEAD:"${GITHUB_REF_NAME}"
-          fi
+          git commit -m "ci: recompile CascadaBridge.ex4 / .ex5 [skip ci]"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin HEAD:"${GITHUB_REF_NAME}"
