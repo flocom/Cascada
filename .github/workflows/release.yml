@@ -6,10 +6,140 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
+  # Compile MT4 / MT5 EAs on a Windows runner and publish them as an
+  # artifact so every matrix build below embeds the freshly-compiled
+  # binaries via `include_bytes!`. Previously this ran only on branch
+  # pushes (compile-eas.yml) and auto-committed back to main, which
+  # meant a tag pushed at the same time as a source change bundled
+  # STALE .ex4 / .ex5 into the release. Doing it up-front here
+  # guarantees the release always ships a matching pair.
+  # cTrader `.algo` is proprietary (signed container) and cannot be
+  # compiled headlessly — committed manually in ea/ctrader/prebuilt/.
+  compile-eas:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download MT5 setup
+        shell: pwsh
+        run: |
+          Invoke-WebRequest `
+            -Uri 'https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe' `
+            -OutFile 'mt5setup.exe' `
+            -UseBasicParsing
+
+      - name: Silent-install MT5 (/auto)
+        shell: pwsh
+        run: |
+          Start-Process -FilePath '.\mt5setup.exe' -ArgumentList '/auto' -Wait
+          Get-Process -Name terminal64 -ErrorAction SilentlyContinue | Stop-Process -Force
+          if (-not (Test-Path 'C:\Program Files\MetaTrader 5\metaeditor64.exe')) {
+            throw 'metaeditor64.exe missing — install failed'
+          }
+
+      - name: Seed MQL5 stdlib (Trade\*.mqh)
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/terencebeauj/Trading_bot_BollingerBands.git '.mql5-stdlib'
+          $srcInc = Join-Path $PWD '.mql5-stdlib\Include'
+          $destInstall = 'C:\Program Files\MetaTrader 5\MQL5\Include'
+          New-Item -ItemType Directory -Force -Path $destInstall | Out-Null
+          Copy-Item -Path "$srcInc\*" -Destination $destInstall -Recurse -Force
+          $termRoot = 'C:\Users\runneradmin\AppData\Roaming\MetaQuotes\Terminal'
+          New-Item -ItemType Directory -Force -Path $termRoot | Out-Null
+          $termDir  = Get-ChildItem $termRoot -Directory -ErrorAction SilentlyContinue |
+                      Where-Object { $_.Name -match '^[0-9A-F]{32}$' } | Select-Object -First 1
+          if (-not $termDir) {
+            $h = -join ((1..32) | ForEach-Object { '{0:X}' -f (Get-Random -Min 0 -Max 16) })
+            $termDir = New-Item -ItemType Directory -Path (Join-Path $termRoot $h)
+          }
+          $destUser = Join-Path $termDir.FullName 'MQL5\Include'
+          New-Item -ItemType Directory -Force -Path $destUser | Out-Null
+          Copy-Item -Path "$srcInc\*" -Destination $destUser -Recurse -Force
+
+      - name: Convert sources to UTF-16 LE + BOM (MetaEditor native)
+        shell: pwsh
+        run: |
+          foreach ($path in @('ea\mt5\CascadaBridge.mq5', 'ea\mt4\CascadaBridge.mq4')) {
+            $full    = Join-Path $PWD $path
+            $content = Get-Content -Path $full -Raw -Encoding UTF8
+            $u16bom  = New-Object System.Text.UnicodeEncoding($false, $true)
+            [System.IO.File]::WriteAllText($full, $content, $u16bom)
+          }
+
+      - name: Compile CascadaBridge.mq5 → .ex5
+        shell: pwsh
+        run: |
+          $editor = 'C:\Program Files\MetaTrader 5\metaeditor64.exe'
+          $src    = Join-Path $PWD 'ea\mt5\CascadaBridge.mq5'
+          $log    = Join-Path $PWD 'mq5.log'
+          $p = Start-Process -FilePath $editor `
+                             -ArgumentList "/compile:$src","/log:$log" `
+                             -Wait -PassThru -NoNewWindow
+          Write-Host "metaeditor exit code: $($p.ExitCode)"
+          if (Test-Path $log) { Get-Content -Path $log -Encoding Unicode -Raw }
+          if (-not (Test-Path 'ea\mt5\CascadaBridge.ex5')) {
+            throw 'compile failed: no .ex5 produced'
+          }
+
+      - name: Download + silent-install MT4 (XM setup — MetaQuotes CDN)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri 'https://download.mql5.com/cdn/web/3315/mt4/xm4setup.exe' `
+                            -OutFile 'mt4setup.exe' -UseBasicParsing
+          Start-Process -FilePath '.\mt4setup.exe' -ArgumentList '/auto' -Wait
+          Get-Process -Name terminal -ErrorAction SilentlyContinue | Stop-Process -Force
+
+      - name: Locate MT4 metaeditor
+        id: mt4editor
+        shell: pwsh
+        run: |
+          $found = Get-ChildItem -Path 'C:\Program Files (x86)','C:\Program Files' `
+                                 -Recurse -Filter 'metaeditor.exe' `
+                                 -ErrorAction SilentlyContinue `
+                   | Where-Object { $_.FullName -notmatch 'MetaTrader 5' } `
+                   | Select-Object -First 1
+          if (-not $found) { throw 'MT4 metaeditor.exe not found' }
+          "path=$($found.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Compile CascadaBridge.mq4 → .ex4
+        shell: pwsh
+        run: |
+          $editor = '${{ steps.mt4editor.outputs.path }}'
+          $src    = Join-Path $PWD 'ea\mt4\CascadaBridge.mq4'
+          $log    = Join-Path $PWD 'mq4.log'
+          $p = Start-Process -FilePath $editor `
+                             -ArgumentList "/compile:$src","/log:$log" `
+                             -Wait -PassThru -NoNewWindow
+          Write-Host "metaeditor exit code: $($p.ExitCode)"
+          if (Test-Path $log) { Get-Content -Path $log -Encoding Unicode -Raw }
+          if (-not (Test-Path 'ea\mt4\CascadaBridge.ex4')) {
+            throw 'compile failed: no .ex4 produced'
+          }
+
+      - name: Stage compiled binaries
+        shell: bash
+        run: |
+          set -e
+          mkdir -p ea/mt5/compiled ea/mt4/compiled
+          mv -f ea/mt5/CascadaBridge.ex5 ea/mt5/compiled/CascadaBridge.ex5
+          mv -f ea/mt4/CascadaBridge.ex4 ea/mt4/compiled/CascadaBridge.ex4
+
+      - name: Upload compiled EAs
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiled-eas
+          path: |
+            ea/mt5/compiled/CascadaBridge.ex5
+            ea/mt4/compiled/CascadaBridge.ex4
+          if-no-files-found: error
+
   build:
-    permissions:
-      contents: write
+    needs: compile-eas
     strategy:
       fail-fast: false
       matrix:
@@ -24,6 +154,24 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+
+      # Overwrite the in-repo .ex4/.ex5 with the freshly-compiled ones
+      # from the compile-eas job. `include_bytes!` reads them from disk
+      # at build time, so this is the single seam that decides what's
+      # embedded into the Cascada installer.
+      - name: Download compiled EAs
+        uses: actions/download-artifact@v4
+        with:
+          name: compiled-eas
+          path: .artifacts/compiled-eas
+
+      - name: Install freshly-compiled EAs into repo layout
+        shell: bash
+        run: |
+          set -e
+          mkdir -p ea/mt5/compiled ea/mt4/compiled
+          cp -f .artifacts/compiled-eas/CascadaBridge.ex5 ea/mt5/compiled/CascadaBridge.ex5
+          cp -f .artifacts/compiled-eas/CascadaBridge.ex4 ea/mt4/compiled/CascadaBridge.ex4
 
       - name: Setup node
         uses: actions/setup-node@v4
