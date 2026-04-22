@@ -89,6 +89,6 @@ jobs:
             - **Linux** AppImage → `chmod +x Cascada_*.AppImage && ./Cascada_*.AppImage`.
 
             Full install walk-through: see the [README](https://github.com/flocom/Cascada#running-an-unsigned-build).
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
