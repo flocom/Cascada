@@ -129,13 +129,23 @@ jobs:
           mv -f ea/mt5/CascadaBridge.ex5 ea/mt5/compiled/CascadaBridge.ex5
           mv -f ea/mt4/CascadaBridge.ex4 ea/mt4/compiled/CascadaBridge.ex4
 
+      # upload-artifact@v4 preserves each path's directory structure in
+      # the archive. Copying into a flat staging folder keeps the
+      # artifact simple (two files at the root) so the build job can
+      # place them deterministically.
+      - name: Flatten compiled binaries for upload
+        shell: bash
+        run: |
+          set -e
+          mkdir -p .artifacts/out
+          cp -f ea/mt5/compiled/CascadaBridge.ex5 .artifacts/out/
+          cp -f ea/mt4/compiled/CascadaBridge.ex4 .artifacts/out/
+
       - name: Upload compiled EAs
         uses: actions/upload-artifact@v4
         with:
           name: compiled-eas
-          path: |
-            ea/mt5/compiled/CascadaBridge.ex5
-            ea/mt4/compiled/CascadaBridge.ex4
+          path: .artifacts/out/
           if-no-files-found: error
 
   build:
