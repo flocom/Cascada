@@ -74,6 +74,36 @@ impl TicketMap {
         self.by_master.get(master).map(|v| v.clone()).unwrap_or_default()
     }
 
+    /// Rewrite every occurrence of `(account_id, old_ticket)` to `new_ticket`
+    /// — both when `account_id` appears as a master (rewrites the key of
+    /// `by_master`) and as a slave (rewrites `SlaveRef::ticket` within any
+    /// entry). Used when a pending fills and cTrader hands back a position
+    /// ID that differs from the pending order ID, so Close/Modify aimed at
+    /// the new position still resolves to the existing mapping.
+    pub fn migrate_ticket(&self, account_id: &str, old_ticket: &str, new_ticket: &str) {
+        if old_ticket == new_ticket { return; }
+        let old_key = MasterKey { account_id: account_id.to_string(), ticket: old_ticket.to_string() };
+        let new_key = MasterKey { account_id: account_id.to_string(), ticket: new_ticket.to_string() };
+        if let Some((_, slaves)) = self.by_master.remove(&old_key) {
+            self.by_master.insert(new_key, slaves);
+        }
+        for mut entry in self.by_master.iter_mut() {
+            for s in entry.value_mut().iter_mut() {
+                if s.account_id == account_id && s.ticket == old_ticket {
+                    s.ticket = new_ticket.to_string();
+                }
+            }
+        }
+    }
+
+    /// True if any master entry exists for `(account_id, ticket)`. Used to
+    /// detect that a `TradeOpened` corresponds to a pending that was already
+    /// mirrored (the mapping was migrated from pending ID to position ID),
+    /// so the engine can skip a duplicate market-order dispatch.
+    pub fn has_master(&self, key: &MasterKey) -> bool {
+        self.by_master.contains_key(key)
+    }
+
     pub fn drop_master(&self, master: &MasterKey) {
         self.by_master.remove(master);
     }

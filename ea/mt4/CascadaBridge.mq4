@@ -260,7 +260,10 @@ void EmitVanished(TrackedOrder &t)
       bool closed_as_position = (OrderType() <= OP_SELL);
       // Pending → if the resulting history entry is a market position, it filled.
       if(was_pending && !closed_as_position) { WritePendingEnd("pending_cancel", t.ticket); return; }
-      if(was_pending && closed_as_position)  { WritePendingEnd("pending_fill",   t.ticket); return; }
+      // position_ticket == pending ticket on MT4 (broker reuses the ID when a
+      // pending transitions to a position). Sending it explicitly keeps the
+      // backend migration uniform across platforms.
+      if(was_pending && closed_as_position)  { WritePendingFill(t.ticket, t.ticket); return; }
       WriteCloseFromHistory(t.ticket);
    }
    else
@@ -374,6 +377,18 @@ void WritePendingEnd(const string ev, int ticket)
       ",\"symbol\":\"" + Esc(sym) + "\"" +
       ",\"ts\":"       + IntegerToString(NowMs());
    WriteEvent(ev, body);
+}
+
+void WritePendingFill(int ticket, int position_ticket)
+{
+   string sym = "";
+   if(OrderSelect(ticket, SELECT_BY_TICKET, MODE_HISTORY)) sym = OrderSymbol();
+   string body =
+      "\"ticket\":\""          + IntegerToString(ticket) + "\"" +
+      ",\"symbol\":\""         + Esc(sym) + "\"" +
+      ",\"position_ticket\":\""+ IntegerToString(position_ticket) + "\"" +
+      ",\"ts\":"               + IntegerToString(NowMs());
+   WriteEvent("pending_fill", body);
 }
 
 void WriteHistoryClosed()

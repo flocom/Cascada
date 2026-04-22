@@ -58,7 +58,7 @@ namespace cAlgo.Robots
                 PendingOrders.Created  += e => Safe(() => WritePending("pending",        e.PendingOrder), "pend_create");
                 PendingOrders.Modified += e => Safe(() => WritePending("pending_modify", e.PendingOrder), "pend_modify");
                 PendingOrders.Cancelled+= e => Safe(() => WritePendingEnd("pending_cancel", e.PendingOrder), "pend_cancel");
-                PendingOrders.Filled   += e => Safe(() => WritePendingEnd("pending_fill",   e.PendingOrder), "pend_fill");
+                PendingOrders.Filled   += e => Safe(() => WritePendingFill(e.PendingOrder, e.Position), "pend_fill");
 
                 // 250 ms keeps quote sampling on par with MT4/MT5 (≈4 Hz, well under
                 // the backend's 5 Hz emit cap). Heartbeat is self-throttled to 1 Hz
@@ -155,6 +155,19 @@ namespace cAlgo.Robots
             WriteEvent(ev, string.Format(Inv,
                 "\"ticket\":\"{0}\",\"symbol\":\"{1}\",\"ts\":{2}",
                 o.Id, Esc(o.SymbolName), Now()));
+        }
+
+        // Pending fills carry the resulting position ID so the backend can
+        // migrate its master↔slave mapping off the pending ID (different from
+        // the position ID on cTrader) and suppress the duplicate market-order
+        // dispatch that would otherwise fire when `Positions.Opened` reports
+        // the new position with an empty `origin`.
+        private void WritePendingFill(PendingOrder o, Position pos)
+        {
+            string posId = pos != null ? pos.Id.ToString(Inv) : "";
+            WriteEvent("pending_fill", string.Format(Inv,
+                "\"ticket\":\"{0}\",\"symbol\":\"{1}\",\"position_ticket\":\"{2}\",\"ts\":{3}",
+                o.Id, Esc(o.SymbolName), posId, Now()));
         }
 
         private void WriteHistorySnapshot()

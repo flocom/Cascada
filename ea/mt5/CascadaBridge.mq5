@@ -125,9 +125,23 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
 
       case TRADE_TRANSACTION_ORDER_DELETE:
       {
-         bool filled = HistoryOrderSelect(trans.order)
-                       && (ENUM_ORDER_STATE)HistoryOrderGetInteger(trans.order, ORDER_STATE) == ORDER_STATE_FILLED;
-         WritePendingEnd(filled ? "pending_fill" : "pending_cancel", trans.order);
+         if(!HistoryOrderSelect(trans.order)) break;
+         // MT5 fires ORDER_DELETE for every order leaving the active list,
+         // including filled market orders. Only pending types produce the
+         // pending_fill / pending_cancel signals the backend expects —
+         // skip the rest so market fills don't masquerade as pendings.
+         ENUM_ORDER_TYPE otype = (ENUM_ORDER_TYPE)HistoryOrderGetInteger(trans.order, ORDER_TYPE);
+         if(!IsPendingType(otype)) break;
+         bool filled = (ENUM_ORDER_STATE)HistoryOrderGetInteger(trans.order, ORDER_STATE) == ORDER_STATE_FILLED;
+         if(filled)
+         {
+            ulong position_id = (ulong)HistoryOrderGetInteger(trans.order, ORDER_POSITION_ID);
+            WritePendingFill(trans.order, position_id);
+         }
+         else
+         {
+            WritePendingEnd("pending_cancel", trans.order);
+         }
          break;
       }
    }
@@ -361,6 +375,22 @@ void WritePendingEnd(const string ev, ulong ticket)
       ",\"symbol\":\"" + Esc(sym) + "\"" +
       ",\"ts\":"       + IntegerToString(NowMs());
    WriteEvent(ev, body);
+}
+
+// pending_fill carries the resulting position ID so the backend can migrate
+// its master↔slave ticket mapping off the pending ID. On MT5 position_id
+// usually equals the pending ticket (hedging accounts reuse the ID), but
+// sending it explicitly keeps the protocol uniform with cTrader.
+void WritePendingFill(ulong ticket, ulong position_id)
+{
+   string sym = "";
+   if(HistoryOrderSelect(ticket)) sym = HistoryOrderGetString(ticket, ORDER_SYMBOL);
+   string body =
+      "\"ticket\":\""          + IntegerToString((long)ticket) + "\"" +
+      ",\"symbol\":\""         + Esc(sym) + "\"" +
+      ",\"position_ticket\":\""+ IntegerToString((long)position_id) + "\"" +
+      ",\"ts\":"               + IntegerToString(NowMs());
+   WriteEvent("pending_fill", body);
 }
 
 void WriteHistoryDeal(ulong deal_ticket, ulong position_id)

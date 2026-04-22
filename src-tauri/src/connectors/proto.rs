@@ -143,7 +143,14 @@ pub enum S2C {
         #[serde(default)] expiry: i64,
     },
     PendingCancel { ticket: String, #[serde(default)] symbol: String },
-    PendingFill { ticket: String, #[serde(default)] symbol: String },
+    PendingFill {
+        ticket: String,
+        #[serde(default)] symbol: String,
+        /// ID of the resulting position (may differ from `ticket` on cTrader;
+        /// MT4/MT5 reuse the ticket). Empty when an older EA build doesn't
+        /// send it — engine then skips the master→position mapping migration.
+        #[serde(default)] position_ticket: String,
+    },
     History {
         ticket: String, symbol: String, side: Side, volume: f64,
         #[serde(default)] entry: f64,
@@ -228,9 +235,10 @@ pub fn dispatch(account: &Account, msg: S2C, events: &mpsc::UnboundedSender<Conn
                 ticket, account_id: id.clone(),
             });
         }
-        S2C::PendingFill { ticket, .. } => {
+        S2C::PendingFill { ticket, position_ticket, .. } => {
             let _ = events.send(ConnectorEvent::PendingFilled {
                 ticket, account_id: id.clone(),
+                position_ticket: (!position_ticket.is_empty()).then_some(position_ticket),
             });
         }
         S2C::History { ticket, symbol, side, volume, entry, close: _, profit, origin, opened_at, closed_at } =>

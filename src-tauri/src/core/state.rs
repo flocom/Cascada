@@ -274,7 +274,17 @@ impl AppState {
                     }
                     matched
                 });
-                if !is_mirror {
+                // A master TradeOpened whose ticket already has slave mappings
+                // is the position born from a pending we already mirrored
+                // (ticket_map was migrated by PendingFilled). Skip the engine
+                // fan-out so the slave pending can fill on its own instead of
+                // receiving a duplicate market order.
+                let already_mapped = !is_mirror && self.ticket_map.has_master(
+                    &crate::core::ticket_map::MasterKey {
+                        account_id: t.account_id.clone(),
+                        ticket: t.ticket.clone(),
+                    });
+                if !is_mirror && !already_mapped {
                     engine.on_trade_opened(&t).await;
                 }
             }
@@ -338,10 +348,16 @@ impl AppState {
             ConnectorEvent::PendingCancelled { account_id, ticket } => {
                 engine.on_pending_cancelled(&account_id, &ticket).await;
             }
-            ConnectorEvent::PendingFilled { ticket, account_id } => {
-                // Master-side fill → slave pending fills on its own when the
-                // slave's broker reaches the target. Just log; ticket_map
-                // cleanup happens when the resulting position closes.
+            ConnectorEvent::PendingFilled { ticket, account_id, position_ticket } => {
+                // Slave pending fills on its own when its broker reaches the
+                // target — we don't re-dispatch. But on cTrader the resulting
+                // position has a new ID, so migrate the master↔slave mapping
+                // onto that ID. The migration also lets the master-side
+                // TradeOpened handler recognize "this position is from an
+                // already-mirrored pending" and skip the duplicate dispatch.
+                if let Some(pid) = position_ticket.as_deref() {
+                    self.ticket_map.migrate_ticket(&account_id, &ticket, pid);
+                }
                 self.emit_log(LogLevel::Info, &account_id,
                     format!("pending {ticket} filled"));
             }

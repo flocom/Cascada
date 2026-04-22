@@ -226,9 +226,15 @@ pub enum ConnectorEvent {
     PendingOpened(PendingOrder),
     PendingModified(PendingOrder),
     PendingCancelled { ticket: String, account_id: String },
-    /// Pending filled on master — no slave action; the mirror pending on
-    /// the slave fills on its own when the slave's broker reaches the target.
-    PendingFilled { ticket: String, account_id: String },
+    /// Pending filled — no slave action; the mirror pending on the slave
+    /// fills on its own when the slave's broker reaches the target.
+    /// `position_ticket` is the ID of the resulting position (may differ from
+    /// `ticket` on cTrader; equals `ticket` on MT4/MT5). Used by state to
+    /// migrate the master/slave mapping from the pending ID to the position
+    /// ID so Close/Modify still reach the right order, and to suppress the
+    /// duplicate market-order dispatch that would otherwise fire when the
+    /// master's `TradeOpened` arrives for the new position.
+    PendingFilled { ticket: String, account_id: String, position_ticket: Option<String> },
 }
 
 /// Order request addressed to a connector.
