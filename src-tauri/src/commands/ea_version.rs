@@ -60,13 +60,21 @@ fn gather_sync() -> Vec<EaStatus> {
         }
     }
 
-    // cTrader — `cBots/CascadaBridge/CascadaBridge.algo`. Different cTrader
-    // installs expose the folder under slightly different roots; the
-    // installer discovery is the source of truth — walk it the same way.
+    // cTrader — `cBots/CascadaBridge/CascadaBridge.algo`. `discover_ctrader_roots`
+    // returns `<calgo>/Sources/Robots` (that's what the installer needs for the
+    // .cs fallback), so walk two levels up to land on the cAlgo documents root
+    // where the deployed .algo actually lives.
     for root in discover_ctrader_roots() {
+        let calgo_root = if root.ends_with("Robots")
+            && root.parent().map(|p| p.ends_with("Sources")).unwrap_or(false)
+        {
+            root.parent().and_then(|p| p.parent()).unwrap_or(&root).to_path_buf()
+        } else {
+            root.clone()
+        };
         let candidates = [
-            root.join("cBots").join("CascadaBridge").join("CascadaBridge.algo"),
-            root.join("Sources").join("Robots").join("CascadaBridge")
+            calgo_root.join("cBots").join("CascadaBridge").join("CascadaBridge.algo"),
+            calgo_root.join("Sources").join("Robots").join("CascadaBridge")
                 .join("CascadaBridge").join("bin").join("Release").join("CascadaBridge.algo"),
         ];
         for p in candidates {
