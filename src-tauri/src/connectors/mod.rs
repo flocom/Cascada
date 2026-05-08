@@ -1,6 +1,7 @@
 pub mod file_bridge;
 pub mod mt_bridge;
 pub mod proto;
+pub mod tv_bridge;
 
 use crate::core::model::{Account, ConnectorCmd, ConnectorEvent, Platform};
 use anyhow::Result;
@@ -27,9 +28,10 @@ pub fn spawn_connector(
     let (tx, rx) = mpsc::channel::<ConnectorCmd>(256);
     match account.platform {
         Platform::CTrader => file_bridge::spawn(account, rx, events),
-        Platform::MT4 | Platform::MT5 => {
+        Platform::MT4 | Platform::MT5 | Platform::TradingView => {
             return Err(anyhow::anyhow!(
-                "MT4/MT5 accounts attach automatically via the file-discovery loop"));
+                "{:?} accounts attach automatically via the file-discovery loop",
+                account.platform));
         }
     }
     Ok(ConnectorHandle { tx })
