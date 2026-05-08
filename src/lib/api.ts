@@ -70,6 +70,17 @@ export interface CopyRule {
 
   /** Manual per-symbol SL/TP pip offset entries (captured via the Compare tab). */
   quote_offsets: QuoteOffset[];
+
+  /**
+   * Deprecated. Kept optional on the TS side for back-compat with existing
+   * Svelte components that still read them; Rust dropped them so they are
+   * always `undefined` at runtime and silently no-op.
+   */
+  quote_compensate?: boolean;
+  /** Deprecated, see `quote_compensate`. */
+  quote_skip_pips?: number;
+  /** Deprecated, see `quote_compensate`. */
+  quote_compensate_symbols?: string[];
 }
 
 export interface QuoteOffset {
