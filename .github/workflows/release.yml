@@ -22,7 +22,7 @@ jobs:
   compile-eas:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download MT5 setup
         shell: pwsh
@@ -129,7 +129,7 @@ jobs:
           mv -f ea/mt5/CascadaBridge.ex5 ea/mt5/compiled/CascadaBridge.ex5
           mv -f ea/mt4/CascadaBridge.ex4 ea/mt4/compiled/CascadaBridge.ex4
 
-      # upload-artifact@v4 preserves each path's directory structure in
+      # upload-artifact preserves each path's directory structure in
       # the archive. Copying into a flat staging folder keeps the
       # artifact simple (two files at the root) so the build job can
       # place them deterministically.
@@ -142,7 +142,7 @@ jobs:
           cp -f ea/mt4/compiled/CascadaBridge.ex4 .artifacts/out/
 
       - name: Upload compiled EAs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: compiled-eas
           path: .artifacts/out/
@@ -163,14 +163,16 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Overwrite the in-repo .ex4/.ex5 with the freshly-compiled ones
       # from the compile-eas job. `include_bytes!` reads them from disk
       # at build time, so this is the single seam that decides what's
       # embedded into the Cascada installer.
+      # upload + download must stay on the same major (artifact format
+      # changed in v6); v6/v6 is the first Node 24-native pair.
       - name: Download compiled EAs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           name: compiled-eas
           path: .artifacts/compiled-eas
@@ -184,7 +186,7 @@ jobs:
           cp -f .artifacts/compiled-eas/CascadaBridge.ex4 ea/mt4/compiled/CascadaBridge.ex4
 
       - name: Setup node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
