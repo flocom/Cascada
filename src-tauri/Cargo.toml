@@ -1,6 +1,6 @@
 [package]
 name = "cascada"
-version = "0.5.7"
+version = "0.5.8"
 edition = "2021"
 description = "Copy trading desktop app"
 
@@ -23,6 +23,18 @@ parking_lot = "0.12"
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde", "clock"], default-features = false }
 directories = "5"
+
+# Windows-only Job Object support: lets us bind mitmdump/Chrome to
+# Cascada's process lifetime via JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+# so a brutal app termination (auto-updater, Task Manager, crash)
+# can't leak children that lock files the next installer needs to
+# overwrite (see _asyncio.pyd file-in-use error reports).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+  "Win32_Foundation",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }
 
 [features]
 default = ["custom-protocol"]

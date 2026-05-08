@@ -38,6 +38,70 @@ use tokio::io::BufReader;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
+/// Bind a freshly-spawned child to a Windows Job Object configured
+/// with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so the OS reaps the
+/// child when Cascada's process handle goes away — even on a brutal
+/// `TerminateProcess` (auto-updater, Task Manager, crash). Without
+/// this, mitmdump.exe survives Cascada's exit and locks
+/// `python\DLLs\_asyncio.pyd`, which the next installer can't
+/// overwrite ("Error opening file for writing").
+///
+/// The job handle is intentionally leaked — its lifetime IS the app's
+/// lifetime. When the OS tears down Cascada's process, the handle's
+/// kernel ref count drops, the job closes, member processes die.
+/// `kill_on_drop(true)` only fires for clean shutdowns, this covers
+/// the rough ones.
+#[cfg(windows)]
+fn bind_to_kill_on_close_job(child: &Child) -> std::io::Result<()> {
+    use std::sync::OnceLock;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
+        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+
+    static JOB: OnceLock<usize> = OnceLock::new();
+
+    let job_handle: HANDLE = *JOB.get_or_init(|| {
+        let h = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if h.is_null() { return 0usize; }
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let ok = unsafe {
+            SetInformationJobObject(
+                h,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const _,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+        if ok == 0 { return 0usize; }
+        h as usize
+    }) as HANDLE;
+
+    if job_handle.is_null() {
+        return Err(std::io::Error::other("job object init failed"));
+    }
+    let pid = child.id().ok_or_else(|| std::io::Error::other("child has no PID"))?;
+    let proc_handle = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SET_QUOTA, 0, pid) };
+    if proc_handle.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    let assigned = unsafe { AssignProcessToJobObject(job_handle, proc_handle) };
+    let close_err = unsafe { windows_sys::Win32::Foundation::CloseHandle(proc_handle) };
+    let _ = close_err;
+    if assigned == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+#[inline]
+fn bind_to_kill_on_close_job(_child: &Child) -> std::io::Result<()> { Ok(()) }
+
 /// Tokio Command builder with `CREATE_NO_WINDOW` set on Windows. Without
 /// this flag every spawn of `python.exe` / `mitmdump.exe` opens a stray
 /// console window that confuses non-technical users (a black box pops up
@@ -350,6 +414,16 @@ impl TvProxyManager {
             anyhow!("spawn mitmdump failed: {e} — re-run setup if Python deps changed")
         })?;
 
+        // Bind mitmdump to Cascada's kill-on-close job (Windows only).
+        // Best-effort: if the assignment fails we still proceed —
+        // `kill_on_drop(true)` covers clean shutdowns; only abrupt
+        // terminations leak the child without the job binding.
+        if let Err(e) = bind_to_kill_on_close_job(&child) {
+            self.log(LogLevel::Warn, format!(
+                "tv-proxy: could not bind mitmdump to job object ({e}) — \
+                 leftover process possible if Cascada is force-killed"));
+        }
+
         // Forward child stdio into the log stream as separate background
         // tasks so the supervisor doesn't block on either pipe.
         if let Some(out) = child.stdout.take() {
@@ -451,6 +525,11 @@ impl TvProxyManager {
             .kill_on_drop(true);
 
         let child = spawn.spawn().map_err(|e| anyhow!("browser spawn failed: {e}"))?;
+
+        // Pin the browser to Cascada's kill-on-close job so a brutal
+        // app exit doesn't leave a Chrome window hanging around the
+        // Windows file system locks.
+        let _ = bind_to_kill_on_close_job(&child);
 
         // Replace any prior browser child. The previous one — if it's
         // still alive — gets dropped and `kill_on_drop` reaps it.
