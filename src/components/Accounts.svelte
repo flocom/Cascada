@@ -319,19 +319,25 @@
           </div>
         {:else if mode === "TradingView"}
           <p class="lead">
-            TradingView is a browser product, so trades are captured by a small Python sidecar
-            (<code>tv-proxy/cascada_addon.py</code>, bundled in this repo) running as a
-            <a href="https://mitmproxy.org/" target="_blank" rel="noreferrer">mitmproxy</a> addon.
-            Once the sidecar is running, your TV master account appears here automatically.
+            TradingView is a browser product, so trades are captured by a small Python sidecar bundled
+            in this repo. One command installs everything (Python venv, mitmproxy, CA cert) and the
+            addon auto-discovers your broker host + account ID from the first trade you place.
           </p>
           <ol class="tv-steps">
-            <li>Install: <code>pip install mitmproxy requests</code></li>
-            <li>Trust the mitmproxy CA cert (run <code>mitmdump</code> once, then add <code>~/.mitmproxy/mitmproxy-ca-cert.pem</code> to your browser's trust store).</li>
-            <li>Find your TV broker host + account id in DevTools → Network (filter by <code>accounts/</code>).</li>
-            <li>Run: <code>mitmdump -s tv-proxy/cascada_addon.py --set tv_broker_url=&lt;host&gt; --set tv_account_id=&lt;id&gt;</code></li>
-            <li>Set browser HTTP/HTTPS proxy to <code>127.0.0.1:8080</code> and trade on TV.</li>
+            <li>
+              From the Cascada repo root, run the bootstrap script:
+              <ul class="tv-platform-cmd">
+                <li><span class="muted small">macOS / Linux:</span> <code>./tv-proxy/setup.sh</code></li>
+                <li><span class="muted small">Windows (PowerShell):</span> <code>.\tv-proxy\setup.ps1</code></li>
+              </ul>
+            </li>
+            <li>Set your browser HTTP/HTTPS proxy to <code>127.0.0.1:8080</code>.</li>
+            <li>Open TradingView and place any tiny trade — your TV master account appears here automatically.</li>
           </ol>
-          <p class="hint">Full setup walkthrough in <code>tv-proxy/README.md</code>.</p>
+          <p class="hint">
+            Manual install + troubleshooting in <code>tv-proxy/README.md</code>.
+            Uses <a href="https://mitmproxy.org/" target="_blank" rel="noreferrer">mitmproxy</a> under the hood.
+          </p>
         {:else}
           <p class="lead">
             Install <code>CascadaBridge.{mode === "MT4" ? "mq4" : "mq5"}</code>, enable <strong>AutoTrading</strong>, and drag the EA onto any chart — your account appears here automatically. No network setup needed. Multiple {mode} terminals are supported in parallel.
@@ -561,6 +567,12 @@
   }
   .tv-steps a { color: var(--primary); text-decoration: none; }
   .tv-steps a:hover { text-decoration: underline; }
+  .tv-platform-cmd {
+    margin: 4px 0 4px; padding-left: 14px;
+    list-style: none; display: flex; flex-direction: column; gap: 2px;
+  }
+  .tv-platform-cmd li { line-height: 1.6; }
+  .tv-platform-cmd .muted { display: inline-block; min-width: 145px; }
 
   .instructions {
     padding: 14px 16px;
