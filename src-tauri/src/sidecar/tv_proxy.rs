@@ -121,6 +121,11 @@ struct State {
     /// blanket `--ignore-certificate-errors` flag, which has been
     /// restricted to debug builds in modern Chromium.
     cert_spki: Option<String>,
+    /// Cascada-launched Chromium process. Stored so we can kill it on
+    /// Cascada quit / Stop proxy — without this the browser lingers
+    /// after the proxy goes down, leaving the user with a TradingView
+    /// window pointed at a dead 127.0.0.1:8080.
+    browser_child: Option<Child>,
 }
 
 #[derive(Clone, Debug)]
@@ -425,6 +430,14 @@ impl TvProxyManager {
         // TradingView legitimately needs tabs (chart + screener + etc) so
         // we open a normal window. The user_data_dir keeps everything
         // sandboxed regardless.
+        //
+        // `kill_on_drop(true)` couples the browser's lifetime to
+        // TvProxyManager — when the user quits Cascada (which the main.rs
+        // CloseRequested handler turns into a `stop()` call), the proxy
+        // goes down AND the browser closes, instead of leaving a
+        // TradingView window pointed at a dead 127.0.0.1:8080. We also
+        // explicitly kill any previous browser child so re-clicking
+        // "Open TradingView" doesn't accumulate windows.
         let mut spawn = cmd(&browser);
         spawn
             .arg(format!("--proxy-server=127.0.0.1:{}", self.port))
@@ -434,16 +447,32 @@ impl TvProxyManager {
             .arg("--no-default-browser-check")
             .arg("https://www.tradingview.com/chart/")
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
 
-        spawn.spawn().map_err(|e| anyhow!("browser spawn failed: {e}"))?;
+        let child = spawn.spawn().map_err(|e| anyhow!("browser spawn failed: {e}"))?;
+
+        // Replace any prior browser child. The previous one — if it's
+        // still alive — gets dropped and `kill_on_drop` reaps it.
+        let mut s = self.state.lock().await;
+        if let Some(mut prev) = s.browser_child.take() {
+            let _ = prev.kill().await;
+            let _ = prev.wait().await;
+        }
+        s.browser_child = Some(child);
         Ok(())
     }
 
-    /// Stop the running mitmdump child. Best-effort: a child that already
-    /// died (crash, manual kill) is treated as success.
+    /// Stop the running mitmdump child AND any Cascada-managed browser
+    /// window. Best-effort: a child that already died (crash, user
+    /// manually closed the browser tab) is treated as success.
     pub async fn stop(&self) -> Result<()> {
         let mut s = self.state.lock().await;
+        if let Some(mut child) = s.browser_child.take() {
+            self.log(LogLevel::Info, "tv-proxy: closing TradingView browser");
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
         if let Some(mut child) = s.child.take() {
             self.log(LogLevel::Info, "tv-proxy: stopping mitmdump");
             let _ = child.kill().await;
