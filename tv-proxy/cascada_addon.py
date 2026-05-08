@@ -46,7 +46,13 @@ compatible with the rest of the Cascada connector ecosystem.
 Wire format reference: src-tauri/src/connectors/proto.rs (look for `enum S2C`).
 """
 
-from __future__ import annotations
+# Note: NOT using `from __future__ import annotations`. Combined with
+# Python 3.12 dataclass introspection (`_is_type` in dataclasses.py),
+# stringified annotations from PEP 563 trigger a crash inside
+# `_process_class` on the first @dataclass decoration when running
+# under python-build-standalone's Windows distribution. Evaluating
+# annotations eagerly avoids that path entirely. We're on 3.12 so
+# `dict[str, float]` and other PEP 585 generics work natively.
 
 import json
 import platform
