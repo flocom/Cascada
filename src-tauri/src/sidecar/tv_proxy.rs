@@ -34,17 +34,24 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::BufReader;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
 /// Tokio Command builder with `CREATE_NO_WINDOW` set on Windows. Without
 /// this flag every spawn of `python.exe` / `mitmdump.exe` opens a stray
 /// console window that confuses non-technical users (a black box pops up
-/// next to the app while setup runs). Cross-platform no-op elsewhere.
+/// next to the app while setup runs). On all platforms we also force
+/// UTF-8 stdio for any Python child — without a real terminal,
+/// mitmdump on Windows otherwise picks up the system locale (cp1252
+/// in France) and dies with `OSError [Errno 22] Invalid argument` the
+/// first time it prints a non-Latin-1 byte (Google OAuth URLs do this
+/// reliably). The env vars are no-ops for non-Python binaries.
 #[allow(unused_mut)]
 fn cmd<S: AsRef<OsStr>>(program: S) -> Command {
     let mut c = Command::new(program);
+    c.env("PYTHONIOENCODING", "utf-8")
+     .env("PYTHONUTF8", "1");
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -131,6 +138,14 @@ pub struct TvProxyManager {
     /// resource dir). `None` in dev builds without bundled resources or
     /// on architectures where bundling was skipped.
     bundled_python_dir: std::sync::OnceLock<PathBuf>,
+    /// Cached resolved Chromium-family browser. Populated lazily on
+    /// first `status()` poll and invalidated only if the binary
+    /// disappears between calls — avoids re-statting the per-platform
+    /// candidate list every 2 s while the TradingView pane is open.
+    /// Sync `parking_lot::Mutex` (already a transitive dep) is enough;
+    /// the lookup is so cheap it doesn't warrant the await of
+    /// `tokio::sync::Mutex`.
+    browser_cache: parking_lot::Mutex<Option<PathBuf>>,
 }
 
 impl TvProxyManager {
@@ -140,6 +155,7 @@ impl TvProxyManager {
             events,
             port: DEFAULT_PORT,
             bundled_python_dir: std::sync::OnceLock::new(),
+            browser_cache: parking_lot::Mutex::new(None),
         }
     }
 
@@ -154,8 +170,15 @@ impl TvProxyManager {
 
     pub async fn status(&self) -> TvProxyStatus {
         let s = self.state.lock().await;
+        self.snapshot(&s)
+    }
+
+    /// Build a `TvProxyStatus` from the locked state. Used by `status()`
+    /// for external polls and inline by `setup()` / `start()` so they
+    /// can return fresh status without dropping the lock and re-acquiring.
+    fn snapshot(&self, s: &State) -> TvProxyStatus {
         let venv = venv_dir();
-        let browser = find_chromium_browser();
+        let browser = self.cached_browser();
         TvProxyStatus {
             installed: s.installed,
             running: s.child.is_some(),
@@ -169,6 +192,20 @@ impl TvProxyManager {
             browser_path: browser.map(|p| p.display().to_string()),
             last_error: s.last_error.clone(),
         }
+    }
+
+    /// Look up the browser path, populating `browser_cache` on first
+    /// hit. The Accounts UI polls `status()` every 2 s while the
+    /// TradingView pane is open, so without caching we'd re-stat every
+    /// candidate path 30 times a minute. Cache invalidates if the
+    /// previously-found binary disappears (uninstalled mid-session).
+    fn cached_browser(&self) -> Option<PathBuf> {
+        if let Some(p) = self.browser_cache.lock().clone() {
+            if p.exists() { return Some(p); }
+        }
+        let found = find_chromium_browser();
+        *self.browser_cache.lock() = found.clone();
+        found
     }
 
     /// Idempotent first-time setup. Detects Python, creates the venv,
@@ -254,7 +291,7 @@ impl TvProxyManager {
         s.installed = true;
         s.last_error = None;
         s.cert_spki = spki;
-        Ok(self_status(&s, self.port))
+        Ok(self.snapshot(&s))
     }
 
     /// Spawn the supervised mitmdump child. Idempotent: returns the
@@ -263,7 +300,7 @@ impl TvProxyManager {
     pub async fn start(self: &Arc<Self>) -> Result<TvProxyStatus> {
         {
             let s = self.state.lock().await;
-            if s.child.is_some() { return Ok(self_status(&s, self.port)); }
+            if s.child.is_some() { return Ok(self.snapshot(&s)); }
         }
         let installed = self.state.lock().await.installed;
         if !installed { self.setup().await?; }
@@ -341,7 +378,7 @@ impl TvProxyManager {
                 let mut s = self.state.lock().await;
                 s.child = Some(child);
                 s.last_error = None;
-                return Ok(self_status(&s, self.port));
+                return Ok(self.snapshot(&s));
             }
         }
 
@@ -453,26 +490,6 @@ impl TvProxyManager {
         }
         let _ = child.kill().await;
         let _ = child.wait().await;
-    }
-}
-
-/// Snapshot helper that doesn't borrow `&self` (avoids re-acquiring the
-/// state mutex when we already hold it).
-fn self_status(s: &State, port: u16) -> TvProxyStatus {
-    let venv = venv_dir();
-    let browser = find_chromium_browser();
-    TvProxyStatus {
-        installed: s.installed,
-        running: s.child.is_some(),
-        port,
-        python_path: s.python.as_ref().map(|p| p.path.display().to_string()),
-        python_version: s.python.as_ref().map(|p| p.version.clone()),
-        addon_path: Some(addon_path().display().to_string()),
-        venv_path: venv.as_ref().map(|p| p.display().to_string()),
-        cert_path: cert_path().map(|p| p.display().to_string()),
-        browser_ready: s.installed && s.cert_spki.is_some() && browser.is_some(),
-        browser_path: browser.map(|p| p.display().to_string()),
-        last_error: s.last_error.clone(),
     }
 }
 
@@ -720,9 +737,16 @@ print(base64.b64encode(hashlib.sha256(spki).digest()).decode())
     Ok(hash)
 }
 
-/// Read every line from `pipe` and forward as a Cascada log entry under
-/// the synthetic `tv-proxy` source. Stops when the pipe closes (child
-/// exited or stdio was redirected).
+/// Forward every line from `pipe` as a Cascada log entry under the
+/// synthetic `tv-proxy` source.
+///
+/// Reads raw bytes and decodes lossily — `BufReader::lines()` would
+/// drop the whole pipe on the first non-UTF-8 byte (mitmdump on
+/// Windows occasionally writes cp1252-encoded URLs / headers). When
+/// the reader exits, mitmdump's stdout pipe closes, the next print
+/// hits broken-pipe / `OSError [Errno 22]`, and the proxy starts
+/// dropping flows mid-handshake — exactly the failure mode behind
+/// the Google OAuth login breakage in the wild.
 async fn forward_lines<R>(
     pipe: R,
     events: tokio::sync::mpsc::UnboundedSender<ConnectorEvent>,
@@ -730,14 +754,26 @@ async fn forward_lines<R>(
 ) where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
-    let mut reader = BufReader::new(pipe).lines();
-    while let Ok(Some(line)) = reader.next_line().await {
-        let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
-        let _ = events.send(ConnectorEvent::Log {
-            account_id: LOG_SOURCE.to_string(),
-            level,
-            message: trimmed.to_string(),
-        });
+    use tokio::io::AsyncBufReadExt;
+    let mut reader = BufReader::new(pipe);
+    let mut buf: Vec<u8> = Vec::with_capacity(256);
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf).await {
+            Ok(0) => break, // EOF — child exited cleanly
+            Ok(_) => {
+                let line = String::from_utf8_lossy(&buf);
+                let trimmed = line.trim();
+                if trimmed.is_empty() { continue; }
+                let _ = events.send(ConnectorEvent::Log {
+                    account_id: LOG_SOURCE.to_string(),
+                    level,
+                    message: trimmed.to_string(),
+                });
+            }
+            // Read errors are unrecoverable on a child stdio pipe; bail
+            // so the spawned task can shut down rather than spinning.
+            Err(_) => break,
+        }
     }
 }
