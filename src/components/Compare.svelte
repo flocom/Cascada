@@ -474,12 +474,14 @@
     if (p === "cTrader") return "cT";
     if (p === "MT4") return "M4";
     if (p === "MT5") return "M5";
+    if (p === "TradingView") return "TV";
     return "?";
   }
   function platformClass(p?: string): string {
     if (p === "cTrader") return "pf-ct";
     if (p === "MT4") return "pf-mt4";
     if (p === "MT5") return "pf-mt5";
+    if (p === "TradingView") return "pf-tv";
     return "";
   }
 </script>
@@ -850,6 +852,7 @@
   .pf-badge.pf-ct  { background: linear-gradient(135deg, #1e40af, #3b82f6); color: #fff; }
   .pf-badge.pf-mt4 { background: linear-gradient(135deg, #b91c1c, #ef4444); color: #fff; }
   .pf-badge.pf-mt5 { background: linear-gradient(135deg, #166534, #22c55e); color: #fff; }
+  .pf-badge.pf-tv  { background: linear-gradient(135deg, #1d4ed8, #38bdf8); color: #fff; }
   .acct-select {
     flex: 1; min-width: 0;
     border: 1px solid var(--border);
