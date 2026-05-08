@@ -147,7 +147,16 @@ async fn kill_leftover_mitmdump() {
 fn cmd<S: AsRef<OsStr>>(program: S) -> Command {
     let mut c = Command::new(program);
     c.env("PYTHONIOENCODING", "utf-8")
-     .env("PYTHONUTF8", "1");
+     .env("PYTHONUTF8", "1")
+     // Force unbuffered stdout/stderr. Without this, Python defaults to
+     // block-buffered (8 KB) when stdio is a pipe (not a TTY) — so a
+     // freshly-spawned mitmdump can run for hours without flushing a
+     // single log line to Cascada's `forward_lines` task. The buffer
+     // only drains when mitmdump exits, which is exactly when the user
+     // can no longer act on the data. `-u` / `PYTHONUNBUFFERED=1`
+     // switches stdout/stderr to line-buffered mode and was the root
+     // cause of "addon logs never appear in real time" reports.
+     .env("PYTHONUNBUFFERED", "1");
     #[cfg(windows)]
     {
         // CREATE_NO_WINDOW = 0x08000000 — suppresses the conhost window
@@ -452,6 +461,13 @@ impl TvProxyManager {
             // user's log panel. The addon emits its own structured logs
             // for the events Cascada cares about.
             .arg("--set").arg("flow_detail=0")
+            // Surface info-level logs from the addon. Mitmproxy 12
+            // defaults `termlog_verbosity` so high that `ctx.log.info`
+            // from the bundled cascada_addon.py never reaches stdout —
+            // discovery, body diagnostics, and bridge-attached events
+            // all silently disappeared, which is what made the
+            // PaperTrading flow look like a black box during testing.
+            .arg("--set").arg("termlog_verbosity=info")
             // Pass-through (don't MITM) hosts that ship hard-coded cert
             // pins beyond what `--ignore-certificate-errors-spki-list`
             // can satisfy. Without this, Google / Apple / Microsoft
