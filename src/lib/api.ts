@@ -97,6 +97,12 @@ export interface TvProxyStatus {
   addonPath?: string | null;
   venvPath?: string | null;
   certPath?: string | null;  // ~/.mitmproxy/mitmproxy-ca-cert.pem
+  /** All preconditions for the bundled-browser flow are met (proxy
+   * installed, cert generated + SPKI hashed, Chromium-family browser
+   * found on disk). Drives the "Open TradingView" button. */
+  browserReady: boolean;
+  /** Resolved Chrome/Edge/Brave/Chromium binary; null when none found. */
+  browserPath?: string | null;
   lastError?: string | null;
 }
 
@@ -203,11 +209,14 @@ export const api = {
   /** Compare installed EAs / cBots with the ones bundled in this build. */
   checkEaVersions: () => invoke<EaStatus[]>("check_ea_versions"),
 
-  /** TradingView sidecar lifecycle. `setup` is idempotent — safe to re-run. */
+  /** TradingView sidecar lifecycle. `setup` is idempotent — safe to re-run.
+   * `openBrowser` ensures the proxy is running, then spawns an isolated
+   * Chrome/Edge window pointed at TradingView (no system proxy changes). */
   tvProxyStatus: () => invoke<TvProxyStatus>("tv_proxy_status"),
   tvProxySetup: () => invoke<TvProxyStatus>("tv_proxy_setup"),
   tvProxyStart: () => invoke<TvProxyStatus>("tv_proxy_start"),
   tvProxyStop: () => invoke<TvProxyStatus>("tv_proxy_stop"),
+  tvProxyOpenBrowser: () => invoke<TvProxyStatus>("tv_proxy_open_browser"),
 
   exportSettings: (path: string) => invoke<string>("export_settings", { path }),
   importSettings: (path: string) =>

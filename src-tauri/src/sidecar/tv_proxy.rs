@@ -83,9 +83,18 @@ pub struct TvProxyStatus {
     pub python_version: Option<String>,
     pub addon_path: Option<String>,
     pub venv_path: Option<String>,
-    /// CA cert mitmproxy generates on first launch — surfaced so the UI
-    /// can show the path the user needs to trust in their browser.
+    /// CA cert mitmproxy generates on first launch — kept around for
+    /// the rare advanced user who wants to import it manually into a
+    /// non-Cascada-managed browser.
     pub cert_path: Option<String>,
+    /// `true` once the bundled-browser flow is ready to launch (proxy
+    /// installed, cert generated, SPKI hash computed). Drives the
+    /// "Open TradingView" button in the UI.
+    pub browser_ready: bool,
+    /// Path to the Chromium-family browser Cascada will spawn for
+    /// TradingView (Chrome, Edge, Brave, Chromium). `None` if no
+    /// supported browser was found on the machine.
+    pub browser_path: Option<String>,
     pub last_error: Option<String>,
 }
 
@@ -97,6 +106,14 @@ struct State {
     /// Lazily computed once Python + venv exist; cached so `status()`
     /// doesn't re-stat the venv on every poll.
     installed: bool,
+    /// SHA-256 of the mitmproxy CA cert's SubjectPublicKeyInfo, base64.
+    /// Computed once after `bootstrap_cert()` from the venv's `cryptography`
+    /// (mitmproxy dep). Passed to Chrome's
+    /// `--ignore-certificate-errors-spki-list` so the bundled browser
+    /// trusts only the proxy cert and nothing else — narrower than the
+    /// blanket `--ignore-certificate-errors` flag, which has been
+    /// restricted to debug builds in modern Chromium.
+    cert_spki: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -138,6 +155,7 @@ impl TvProxyManager {
     pub async fn status(&self) -> TvProxyStatus {
         let s = self.state.lock().await;
         let venv = venv_dir();
+        let browser = find_chromium_browser();
         TvProxyStatus {
             installed: s.installed,
             running: s.child.is_some(),
@@ -147,6 +165,8 @@ impl TvProxyManager {
             addon_path: Some(addon_path().display().to_string()),
             venv_path: venv.as_ref().map(|p| p.display().to_string()),
             cert_path: cert_path().map(|p| p.display().to_string()),
+            browser_ready: s.installed && s.cert_spki.is_some() && browser.is_some(),
+            browser_path: browser.map(|p| p.display().to_string()),
             last_error: s.last_error.clone(),
         }
     }
@@ -212,10 +232,28 @@ impl TvProxyManager {
             self.bootstrap_cert(&venv).await;
         }
 
+        // Pre-compute the cert's SPKI hash so `open_browser()` can pass it
+        // to Chrome via `--ignore-certificate-errors-spki-list` without
+        // hitting Python again on every launch. Failures here are
+        // non-fatal — the open-browser flow surfaces a clearer error if
+        // the hash is missing.
+        let spki = if let Some(cp) = cert_path().filter(|p| p.exists()) {
+            match compute_cert_spki(&venv_py, &cp).await {
+                Ok(h) => Some(h),
+                Err(e) => {
+                    self.log(LogLevel::Warn, format!(
+                        "tv-proxy: SPKI hash compute failed — {e}. \
+                         Open TradingView will fail until setup is re-run."));
+                    None
+                }
+            }
+        } else { None };
+
         let mut s = self.state.lock().await;
         s.python = Some(py);
         s.installed = true;
         s.last_error = None;
+        s.cert_spki = spki;
         Ok(self_status(&s, self.port))
     }
 
@@ -275,6 +313,55 @@ impl TvProxyManager {
         Ok(self_status(&s, self.port))
     }
 
+    /// Spawn a Cascada-managed Chrome/Edge window pre-configured to route
+    /// through the proxy and trust mitmproxy's CA — the user's main
+    /// browser is never touched. The browser uses an isolated profile
+    /// under `<cascada_root>/tv-browser/profile/` so TradingView logins
+    /// persist across Cascada restarts without polluting (or being
+    /// polluted by) the user's regular browsing.
+    ///
+    /// Calls `start()` first if the proxy isn't running yet — there's no
+    /// point opening the browser if mitmdump can't intercept.
+    pub async fn open_browser(self: &Arc<Self>) -> Result<()> {
+        // Ensure the proxy is up. start() is idempotent (no-op when
+        // already running) and triggers setup() on first launch.
+        let running = self.state.lock().await.child.is_some();
+        if !running { self.start().await?; }
+
+        let browser = find_chromium_browser().ok_or_else(|| anyhow!(
+            "Could not find Chrome, Edge, Brave, or Chromium on this machine. \
+             Install one of them, then click Open TradingView again."))?;
+
+        let spki = self.state.lock().await.cert_spki.clone().ok_or_else(|| anyhow!(
+            "Proxy CA cert hash not computed yet — re-run Install proxy."))?;
+
+        let profile_dir = browser_profile_dir().ok_or_else(|| anyhow!(
+            "cannot resolve cascada_root for browser profile"))?;
+        tokio::fs::create_dir_all(&profile_dir).await?;
+
+        self.log(LogLevel::Info, format!(
+            "tv-proxy: opening {} in isolated browser ({})",
+            "TradingView", browser.display()));
+
+        // `--app=` mode would be cleaner UX-wise (no browser chrome) but
+        // TradingView legitimately needs tabs (chart + screener + etc) so
+        // we open a normal window. The user_data_dir keeps everything
+        // sandboxed regardless.
+        let mut spawn = cmd(&browser);
+        spawn
+            .arg(format!("--proxy-server=127.0.0.1:{}", self.port))
+            .arg(format!("--user-data-dir={}", profile_dir.display()))
+            .arg(format!("--ignore-certificate-errors-spki-list={spki}"))
+            .arg("--no-first-run")
+            .arg("--no-default-browser-check")
+            .arg("https://www.tradingview.com/chart/")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        spawn.spawn().map_err(|e| anyhow!("browser spawn failed: {e}"))?;
+        Ok(())
+    }
+
     /// Stop the running mitmdump child. Best-effort: a child that already
     /// died (crash, manual kill) is treated as success.
     pub async fn stop(&self) -> Result<()> {
@@ -332,6 +419,7 @@ impl TvProxyManager {
 /// state mutex when we already hold it).
 fn self_status(s: &State, port: u16) -> TvProxyStatus {
     let venv = venv_dir();
+    let browser = find_chromium_browser();
     TvProxyStatus {
         installed: s.installed,
         running: s.child.is_some(),
@@ -341,6 +429,8 @@ fn self_status(s: &State, port: u16) -> TvProxyStatus {
         addon_path: Some(addon_path().display().to_string()),
         venv_path: venv.as_ref().map(|p| p.display().to_string()),
         cert_path: cert_path().map(|p| p.display().to_string()),
+        browser_ready: s.installed && s.cert_spki.is_some() && browser.is_some(),
+        browser_path: browser.map(|p| p.display().to_string()),
         last_error: s.last_error.clone(),
     }
 }
@@ -480,10 +570,109 @@ fn addon_path() -> PathBuf {
 }
 
 /// `~/.mitmproxy/mitmproxy-ca-cert.pem` — mitmproxy hardcodes this path
-/// regardless of where the venv lives, so we surface it for the trust
-/// step the user still has to do manually.
+/// regardless of where the venv lives. Cascada used to surface it for a
+/// manual import step; the bundled-browser flow now handles trust via
+/// `--ignore-certificate-errors-spki-list` so most users never see it.
 fn cert_path() -> Option<PathBuf> {
     directories::BaseDirs::new().map(|b| b.home_dir().join(".mitmproxy").join("mitmproxy-ca-cert.pem"))
+}
+
+/// Persistent profile directory for the Cascada-managed Chromium window.
+/// Lives under cascada_root so logins survive a restart but stay
+/// isolated from the user's regular browser profiles.
+fn browser_profile_dir() -> Option<PathBuf> {
+    crate::connectors::file_bridge::cascada_root()
+        .map(|r| r.join("tv-browser").join("profile"))
+}
+
+/// Locate a Chromium-based browser on the user's machine. Cascada uses
+/// the first one found because all of them honor the same
+/// `--proxy-server` / `--user-data-dir` /
+/// `--ignore-certificate-errors-spki-list` flags. Order = popularity:
+/// Chrome > Edge > Brave > generic chromium.
+fn find_chromium_browser() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let macos_candidates: &[&str] = &[
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "/Applications/Arc.app/Contents/MacOS/Arc",
+        ];
+        for c in macos_candidates {
+            let p = PathBuf::from(c);
+            if p.exists() { return Some(p); }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // ProgramFiles(x86) for 32-bit Chrome on 64-bit Windows; both
+        // exist in the wild because Chrome's installer bitness has
+        // flip-flopped over the years.
+        let local_app_data = std::env::var("LOCALAPPDATA").ok();
+        let candidates: Vec<PathBuf> = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+        ].iter().map(PathBuf::from)
+         .chain(local_app_data.iter().flat_map(|lad| [
+            format!(r"{lad}\Google\Chrome\Application\chrome.exe").into(),
+            format!(r"{lad}\Microsoft\Edge\Application\msedge.exe").into(),
+         ]))
+         .collect();
+        for p in &candidates {
+            if p.exists() { return Some(p.clone()); }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let linux_candidates: &[&str] = &[
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/microsoft-edge",
+            "/usr/bin/microsoft-edge-stable",
+            "/usr/bin/brave-browser",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/snap/bin/chromium",
+        ];
+        for c in linux_candidates {
+            let p = PathBuf::from(c);
+            if p.exists() { return Some(p); }
+        }
+    }
+    None
+}
+
+/// Run the bundled `cryptography` (mitmproxy dep) inside the venv to
+/// hash the CA cert's SPKI. Output is `base64(sha256(SPKI_DER))`, the
+/// exact format Chrome wants in `--ignore-certificate-errors-spki-list`.
+async fn compute_cert_spki(venv_python: &Path, cert: &Path) -> Result<String> {
+    const SCRIPT: &str = "\
+import hashlib, base64, sys\n\
+from cryptography import x509\n\
+from cryptography.hazmat.primitives import serialization\n\
+with open(sys.argv[1], 'rb') as f:\n\
+    c = x509.load_pem_x509_certificate(f.read())\n\
+spki = c.public_key().public_bytes(\n\
+    encoding=serialization.Encoding.DER,\n\
+    format=serialization.PublicFormat.SubjectPublicKeyInfo)\n\
+print(base64.b64encode(hashlib.sha256(spki).digest()).decode())\n";
+    let out = cmd(venv_python)
+        .arg("-c").arg(SCRIPT).arg(cert)
+        .output().await?;
+    if !out.status.success() {
+        return Err(anyhow!("python spki probe failed: {}",
+            String::from_utf8_lossy(&out.stderr)));
+    }
+    let hash = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if hash.is_empty() {
+        return Err(anyhow!("python spki probe returned empty"));
+    }
+    Ok(hash)
 }
 
 /// Read every line from `pipe` and forward as a Cascada log entry under

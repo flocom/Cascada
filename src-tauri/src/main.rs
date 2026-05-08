@@ -85,6 +85,7 @@ fn main() {
             commands::tv_proxy_setup,
             commands::tv_proxy_start,
             commands::tv_proxy_stop,
+            commands::tv_proxy_open_browser,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cascada");

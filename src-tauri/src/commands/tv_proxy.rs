@@ -28,3 +28,9 @@ pub async fn tv_proxy_stop(state: S<'_>) -> Result<TvProxyStatus, String> {
     state.tv_proxy.stop().await.map_err(|e| e.to_string())?;
     Ok(state.tv_proxy.status().await)
 }
+
+#[tauri::command]
+pub async fn tv_proxy_open_browser(state: S<'_>) -> Result<TvProxyStatus, String> {
+    state.tv_proxy.open_browser().await.map_err(|e| e.to_string())?;
+    Ok(state.tv_proxy.status().await)
+}

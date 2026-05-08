@@ -175,7 +175,7 @@
   // mitmdump as a supervised child. Setup + Start are idempotent so the
   // user can mash either button without breaking anything.
   let tvStatus: TvProxyStatus | null = null;
-  let tvBusy: "idle" | "setup" | "start" | "stop" = "idle";
+  let tvBusy: "idle" | "setup" | "start" | "stop" | "open" = "idle";
   let tvPollTimer: ReturnType<typeof setInterval> | null = null;
 
   async function refreshTvStatus() {
@@ -188,18 +188,18 @@
     installStatus = { kind: "info", text: "Installing TradingView proxy (Python venv + mitmproxy)…" };
     try {
       tvStatus = await api.tvProxySetup();
-      installStatus = { kind: "ok", text: "Proxy installed. Click Start to launch it." };
+      installStatus = { kind: "ok", text: "Proxy installed. Click Open TradingView to start trading." };
     } catch (e) {
       installStatus = { kind: "err", text: `${e}` };
     } finally { tvBusy = "idle"; }
   }
-  async function startTvProxy() {
+  async function openTvBrowser() {
     if (tvBusy !== "idle") return;
-    tvBusy = "start";
-    installStatus = { kind: "info", text: "Starting mitmdump…" };
+    tvBusy = "open";
+    installStatus = { kind: "info", text: "Launching TradingView in an isolated browser window…" };
     try {
-      tvStatus = await api.tvProxyStart();
-      installStatus = { kind: "ok", text: `Proxy listening on 127.0.0.1:${tvStatus.port}. Set your browser HTTP/HTTPS proxy to that and trade on TradingView.` };
+      tvStatus = await api.tvProxyOpenBrowser();
+      installStatus = { kind: "ok", text: "TradingView is open. Place any tiny trade — your master account appears here automatically." };
     } catch (e) {
       installStatus = { kind: "err", text: `${e}` };
     } finally { tvBusy = "idle"; }
@@ -392,10 +392,9 @@
           </div>
         {:else if mode === "TradingView"}
           <p class="lead">
-            TradingView is a browser product, so Cascada captures trades through a Python sidecar
-            (mitmproxy + the bundled <code>cascada_addon.py</code>).
-            <strong>Python is bundled inside Cascada</strong> — no system install needed. Just click
-            <em>Install proxy</em> and Cascada handles the rest.
+            Cascada opens TradingView in an <strong>isolated browser window</strong> with a
+            mitmproxy sidecar pre-configured. Your main browser stays untouched, and there's
+            nothing blocking when Cascada is closed.
           </p>
           <div class="tv-status">
             <span class="tv-pill {tvStatus?.running ? 'on' : tvStatus?.installed ? 'idle' : 'off'}">
@@ -426,37 +425,46 @@
                 </button>
               </div>
             </div>
+          {:else if tvStatus && !tvStatus.installed}
+            <div class="install-row">
+              <button class="primary" on:click={setupTvProxy} disabled={tvBusy !== "idle"}>
+                {tvBusy === "setup" ? "Installing…" : "Install proxy"}
+              </button>
+            </div>
+            <p class="hint">
+              One-time setup (~30 s): Cascada provisions a Python venv and installs
+              <a href="https://mitmproxy.org/" target="_blank" rel="noreferrer">mitmproxy</a>.
+              No system changes.
+            </p>
+          {:else if tvStatus && !tvStatus.browserPath}
+            <div class="browser-required">
+              <div class="py-required-head">
+                <strong>Chrome, Edge, or Brave required</strong>
+                <span class="muted small">Cascada launches TradingView in an isolated window — pick any Chromium-based browser.</span>
+              </div>
+              <div class="install-row">
+                <a class="btn-link primary" href="https://www.google.com/chrome/" target="_blank" rel="noreferrer">Download Chrome →</a>
+                <a class="btn-link" href="https://www.microsoft.com/edge" target="_blank" rel="noreferrer">Download Edge</a>
+                <button on:click={refreshTvStatus} disabled={tvBusy !== "idle"}>I've installed it</button>
+              </div>
+            </div>
           {:else}
             <div class="install-row">
-              {#if !tvStatus?.installed}
-                <button class="primary" on:click={setupTvProxy} disabled={tvBusy !== "idle"}>
-                  {tvBusy === "setup" ? "Installing…" : "Install proxy"}
-                </button>
-              {:else if !tvStatus?.running}
-                <button class="primary" on:click={startTvProxy} disabled={tvBusy !== "idle"}>
-                  {tvBusy === "start" ? "Starting…" : "Start proxy"}
-                </button>
-                <button on:click={setupTvProxy} disabled={tvBusy !== "idle"} title="Reinstall venv + reinstall mitmproxy">
-                  Reinstall
-                </button>
-              {:else}
-                <button on:click={stopTvProxy} disabled={tvBusy !== "idle"}>
+              <button class="primary" on:click={openTvBrowser} disabled={tvBusy !== "idle" || !tvStatus?.browserReady}>
+                {tvBusy === "open" ? "Opening…" : "Open TradingView →"}
+              </button>
+              {#if tvStatus?.running}
+                <button on:click={stopTvProxy} disabled={tvBusy !== "idle"} title="Stop the mitmproxy sidecar (closes the proxy, the browser window stays)">
                   {tvBusy === "stop" ? "Stopping…" : "Stop proxy"}
                 </button>
               {/if}
+              <button on:click={setupTvProxy} disabled={tvBusy !== "idle"} title="Reinstall the venv and refresh the cert (rare)">
+                Reinstall
+              </button>
             </div>
-            <ol class="tv-steps">
-              <li>Set your browser HTTP/HTTPS proxy to <code>127.0.0.1:{tvStatus?.port ?? 8080}</code>.</li>
-              <li>
-                Trust the mitmproxy CA cert once
-                {#if tvStatus?.certPath}<code>{tvStatus.certPath}</code>{/if}
-                (browser → Settings → Certificates → Authorities → Import).
-              </li>
-              <li>Open TradingView and place any tiny trade — your TV master account appears here automatically.</li>
-            </ol>
             <p class="hint">
-              Cascada bundles Python 3.12 + <a href="https://mitmproxy.org/" target="_blank" rel="noreferrer">mitmproxy</a> + the addon.
-              Re-running Install is safe.
+              Cascada will open TradingView in {tvStatus?.browserPath?.includes("Edge") ? "Edge" : tvStatus?.browserPath?.includes("Brave") ? "Brave" : "Chrome"} with a sandboxed profile.
+              Place any tiny trade once you're in — your master account appears here automatically.
             </p>
           {/if}
         {:else}
@@ -739,7 +747,7 @@
   .inst-status.ok   { background: #f0fdf4; color: #166534; border-color: #bbf7d0; }
   .inst-status.err  { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
 
-  .py-required {
+  .py-required, .browser-required {
     display: flex; flex-direction: column; gap: 12px;
     padding: 14px 16px;
     border: 1px solid #FED7AA;
