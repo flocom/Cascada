@@ -278,6 +278,18 @@ impl TvProxyManager {
             tokio::fs::write(&addon, ADDON_BODY).await?;
         }
 
+        // Refuse to spawn if the port is already taken — likely a stale
+        // mitmdump from a previous Cascada session that survived `kill_on_drop`
+        // (Windows in particular doesn't always honor it on rough exits).
+        // Surfacing a clear message here is far better than letting the
+        // browser hit ERR_PROXY_CONNECTION_FAILED with no explanation.
+        if tokio::net::TcpStream::connect(("127.0.0.1", self.port)).await.is_ok() {
+            return Err(anyhow!(
+                "Port {} is already in use — likely a leftover mitmdump.exe from a \
+                 previous Cascada session. Kill it via Task Manager (or restart \
+                 your computer) and try again.", self.port));
+        }
+
         self.log(LogLevel::Info, format!(
             "tv-proxy: launching mitmdump on :{} ({})", self.port, mitmdump.display()));
 
@@ -307,10 +319,39 @@ impl TvProxyManager {
             tokio::spawn(forward_lines(err, evt, LogLevel::Warn));
         }
 
-        let mut s = self.state.lock().await;
-        s.child = Some(child);
-        s.last_error = None;
-        Ok(self_status(&s, self.port))
+        // mitmdump takes 1-3 s to import the addon and bind the listener.
+        // Without an explicit readiness probe, `open_browser()` would race
+        // ahead and Chrome would surface ERR_PROXY_CONNECTION_FAILED before
+        // the proxy is up. Worse: a silent crash (broken venv, addon import
+        // error, antivirus quarantine) would never reach the user — the
+        // log forward picks up stderr but only AFTER our caller already
+        // reported success. Poll the port for up to 8 s; if the child
+        // exited or we timed out, kill it and report a clear error.
+        let port = self.port;
+        for _ in 0..32 {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            if let Ok(Some(status)) = child.try_wait() {
+                let _ = child.wait().await;
+                return Err(anyhow!(
+                    "mitmdump exited immediately ({status}) — check the Logs panel \
+                     for crash output. If the venv looks broken, click Reinstall."));
+            }
+            if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+                self.log(LogLevel::Info, format!("tv-proxy: ready on :{port}"));
+                let mut s = self.state.lock().await;
+                s.child = Some(child);
+                s.last_error = None;
+                return Ok(self_status(&s, self.port));
+            }
+        }
+
+        // Timed out — child is still alive but never bound. Kill it so we
+        // don't leak a zombie that'll trip the port-in-use check next run.
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        Err(anyhow!(
+            "mitmdump didn't accept connections on :{port} within 8 s — see Logs \
+             panel for output. Try Reinstall if the issue persists."))
     }
 
     /// Spawn a Cascada-managed Chrome/Edge window pre-configured to route
