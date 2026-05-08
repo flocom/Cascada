@@ -393,8 +393,9 @@
         {:else if mode === "TradingView"}
           <p class="lead">
             TradingView is a browser product, so Cascada captures trades through a Python sidecar
-            (mitmproxy + the bundled <code>cascada_addon.py</code>). Cascada manages the whole
-            lifecycle — installation, launch, supervision — no terminal or repo clone needed.
+            (mitmproxy + the bundled <code>cascada_addon.py</code>).
+            <strong>Python is bundled inside Cascada</strong> — no system install needed. Just click
+            <em>Install proxy</em> and Cascada handles the rest.
           </p>
           <div class="tv-status">
             <span class="tv-pill {tvStatus?.running ? 'on' : tvStatus?.installed ? 'idle' : 'off'}">
@@ -454,8 +455,8 @@
               <li>Open TradingView and place any tiny trade — your TV master account appears here automatically.</li>
             </ol>
             <p class="hint">
-              Cascada bundles <a href="https://mitmproxy.org/" target="_blank" rel="noreferrer">mitmproxy</a> + the addon.
-              Needs Python 3.10+ on PATH (auto-detected). Re-running Install is safe.
+              Cascada bundles Python 3.12 + <a href="https://mitmproxy.org/" target="_blank" rel="noreferrer">mitmproxy</a> + the addon.
+              Re-running Install is safe.
             </p>
           {/if}
         {:else}

@@ -17,11 +17,14 @@
 //!      the manager is dropped (`kill_on_drop`) so a mitmdump child never
 //!      outlives the Tauri process even on rough exits.
 //!
-//! No Python interpreter is bundled — we shell out to a system `python3`.
-//! That's a pragmatic trade-off: bundling CPython would balloon the
-//! installer by ~30 MB per platform and complicates code-signing. macOS
-//! ships Python; Linux nearly always does; Windows users without Python
-//! get a clear error pointing to python.org.
+//! Python interpreter strategy: each release bundles a self-contained
+//! CPython distribution (python-build-standalone, ~30 MB compressed) under
+//! the app's `resource_dir/python/`. `attach_app_handle()` resolves this
+//! once at startup and registers it via `set_bundled_python_dir()`. The
+//! detection routine prefers the bundled interpreter; if it's missing
+//! (dev mode without bundled assets, arch mismatch on a universal macOS
+//! build running on Intel without aarch64 emulation, etc.) it falls back
+//! to scanning PATH for a `python3.10+`.
 
 use crate::core::events::LogLevel;
 use crate::core::model::ConnectorEvent;
@@ -88,6 +91,11 @@ pub struct TvProxyManager {
     state: Mutex<State>,
     events: tokio::sync::mpsc::UnboundedSender<ConnectorEvent>,
     port: u16,
+    /// Directory of the bundled python-build-standalone distribution
+    /// (set by `attach_app_handle` at startup, resolved from the Tauri
+    /// resource dir). `None` in dev builds without bundled resources or
+    /// on architectures where bundling was skipped.
+    bundled_python_dir: std::sync::OnceLock<PathBuf>,
 }
 
 impl TvProxyManager {
@@ -96,7 +104,17 @@ impl TvProxyManager {
             state: Mutex::new(State::default()),
             events,
             port: DEFAULT_PORT,
+            bundled_python_dir: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Register the bundled Python root (e.g. `<resource_dir>/python`).
+    /// Called once at startup from `AppState::attach_app_handle`. The
+    /// directory is expected to contain `bin/python3` (Unix) or
+    /// `python.exe` (Windows). Missing or invalid → silently ignored,
+    /// detection falls back to PATH.
+    pub fn set_bundled_python_dir(&self, dir: PathBuf) {
+        let _ = self.bundled_python_dir.set(dir);
     }
 
     pub async fn status(&self) -> TvProxyStatus {
@@ -121,7 +139,7 @@ impl TvProxyManager {
     pub async fn setup(self: &Arc<Self>) -> Result<TvProxyStatus> {
         self.log(LogLevel::Info, "tv-proxy: setup starting");
 
-        let py = match detect_python().await {
+        let py = match self.resolve_python().await {
             Ok(p) => p,
             Err(e) => {
                 let msg = format!("tv-proxy: Python detection failed — {e}");
@@ -309,9 +327,70 @@ fn self_status(s: &State, port: u16) -> TvProxyStatus {
     }
 }
 
-/// Walk a list of candidate executable names, return the first that
-/// reports `Python ≥ MIN_PY`.
-async fn detect_python() -> Result<PythonInfo> {
+impl TvProxyManager {
+    /// Pick the Python interpreter for this run. Order of preference:
+    /// 1. Bundled distribution under `<resource_dir>/python/` (set via
+    ///    `set_bundled_python_dir`). Production builds always have this.
+    /// 2. PATH detection — the legacy fallback for dev builds and edge
+    ///    cases where the bundled binary can't execute (arch mismatch).
+    async fn resolve_python(&self) -> Result<PythonInfo> {
+        if let Some(dir) = self.bundled_python_dir.get() {
+            let exe = bundled_python_exe(dir);
+            match probe_python(&exe).await {
+                Ok(info) => return Ok(info),
+                Err(e) => self.log(LogLevel::Warn, format!(
+                    "tv-proxy: bundled python at {} unusable ({e}), \
+                     falling back to PATH", exe.display())),
+            }
+        }
+        detect_python_on_path().await
+    }
+}
+
+/// Path to the python executable inside a python-build-standalone
+/// distribution root. Cross-platform — the layout differs between Unix
+/// (`<dir>/bin/python3`) and Windows (`<dir>/python.exe`).
+fn bundled_python_exe(dir: &Path) -> PathBuf {
+    if cfg!(target_os = "windows") {
+        dir.join("python.exe")
+    } else {
+        dir.join("bin").join("python3")
+    }
+}
+
+/// Probe a specific python binary, returning its (major.minor, executable
+/// path) if it reports >= MIN_PY. Used for both the bundled interpreter
+/// and PATH candidates.
+async fn probe_python(exe: &Path) -> Result<PythonInfo> {
+    let out = Command::new(exe)
+        .arg("-c")
+        .arg("import sys; print('%d.%d %s' % (sys.version_info.major, sys.version_info.minor, sys.executable))")
+        .output().await
+        .map_err(|e| anyhow!("{}: {e}", exe.display()))?;
+    if !out.status.success() {
+        return Err(anyhow!("{}: exited {}", exe.display(), out.status));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let (ver_str, real_exe) = stdout.split_once(' ')
+        .ok_or_else(|| anyhow!("{}: unexpected output '{stdout}'", exe.display()))?;
+    let mut parts = ver_str.split('.');
+    let major: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let minor: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    if (major, minor) < MIN_PY {
+        return Err(anyhow!(
+            "{}: reports {ver_str}, need {}.{}+",
+            exe.display(), MIN_PY.0, MIN_PY.1));
+    }
+    Ok(PythonInfo {
+        path: PathBuf::from(real_exe),
+        version: ver_str.to_string(),
+    })
+}
+
+/// Walk a list of candidate executable names on PATH, return the first
+/// that reports `Python ≥ MIN_PY`. Fallback path when no bundled
+/// interpreter is available.
+async fn detect_python_on_path() -> Result<PythonInfo> {
     let candidates: &[&str] = if cfg!(target_os = "windows") {
         &["py", "python3", "python", "python3.13", "python3.12", "python3.11", "python3.10"]
     } else {

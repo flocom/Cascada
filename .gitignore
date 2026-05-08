@@ -6,3 +6,8 @@ src-tauri/gen
 *.log
 .claude/
 .cascada-updater.key
+# python-build-standalone is downloaded fresh by CI release.yml — only the
+# placeholder .gitkeep stays in the repo so Tauri's build-script glob can
+# resolve `bundle.resources/python` in dev builds.
+src-tauri/resources/python/*
+!src-tauri/resources/python/.gitkeep

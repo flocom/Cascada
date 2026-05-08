@@ -154,12 +154,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Per-arch macOS DMGs (replaces the legacy universal build): each
+          # one ships a matching python-build-standalone distribution, so
+          # we can no longer fat-bundle two interpreters into a universal
+          # binary. macos-latest is Apple Silicon, macos-13 is the last
+          # Intel runner GitHub still offers.
           - platform: macos-latest
-            args: '--target universal-apple-darwin'
+            args: '--target aarch64-apple-darwin'
+            python_target: 'aarch64-apple-darwin'
+          - platform: macos-13
+            args: '--target x86_64-apple-darwin'
+            python_target: 'x86_64-apple-darwin'
           - platform: ubuntu-latest
             args: ''
+            python_target: 'x86_64-unknown-linux-gnu'
           - platform: windows-latest
             args: ''
+            python_target: 'x86_64-pc-windows-msvc'
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -194,7 +205,10 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          # `python_target` doubles as the Rust target triple — we need
+          # the toolchain to install the corresponding std for the macOS
+          # cross-arch matrix entries.
+          targets: ${{ matrix.python_target }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -220,6 +234,37 @@ jobs:
       - name: Install npm deps
         run: npm ci
 
+      # Bundle a self-contained CPython distribution so end users don't
+      # need Python on PATH for the TradingView sidecar. python-build-
+      # standalone ships per-target tarballs that extract to a top-level
+      # `python/` directory; tauri.conf.json's bundle.resources entry
+      # picks that up and ships it inside the installer. ~30 MB
+      # compressed per platform — added to the DMG/MSI/AppImage size.
+      #
+      # Pin the version in one place: PBS_TAG controls the
+      # python-build-standalone release; PY_VER is the CPython version
+      # inside that release. Bump together when refreshing.
+      - name: Bundle CPython (python-build-standalone)
+        shell: bash
+        run: |
+          set -euo pipefail
+          PBS_TAG="20260504"
+          PY_VER="3.12.13"
+          TARGET="${{ matrix.python_target }}"
+          # Windows tarballs use the same install_only flavor as the
+          # other platforms. macOS gets a small framework layout; Linux
+          # gets a relocatable lib tree; Windows gets python.exe at the
+          # root. tv_proxy.rs handles all three layouts.
+          URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/cpython-${PY_VER}+${PBS_TAG}-${TARGET}-install_only.tar.gz"
+          mkdir -p src-tauri/resources
+          echo "Downloading $URL"
+          curl -fsSL "$URL" -o /tmp/cpython.tar.gz
+          tar -xzf /tmp/cpython.tar.gz -C src-tauri/resources/
+          rm /tmp/cpython.tar.gz
+          # Sanity-check: tarball should yield src-tauri/resources/python/
+          test -d src-tauri/resources/python
+          ls src-tauri/resources/python | head -5
+
       - name: Build & release with tauri-action
         uses: tauri-apps/tauri-action@v0
         env:
@@ -238,7 +283,8 @@ jobs:
 
             Pick the installer for your platform below.
 
-            - **macOS** — `Cascada_*_universal.dmg` (Intel + Apple Silicon)
+            - **macOS Apple Silicon** — `Cascada_*_aarch64.dmg`
+            - **macOS Intel** — `Cascada_*_x64.dmg`
             - **Windows** — `Cascada_*_x64-setup.exe` or `.msi`
             - **Linux** — `.AppImage` (portable), `.deb` (Debian/Ubuntu) or `.rpm` (Fedora/openSUSE)
 

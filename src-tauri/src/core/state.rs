@@ -76,7 +76,19 @@ impl AppState {
         }
     }
 
-    pub fn attach_app_handle(&self, h: AppHandle) { let _ = self.app_handle.set(h); }
+    pub fn attach_app_handle(&self, h: AppHandle) {
+        // Hand the bundled python-build-standalone distribution path to the
+        // TV proxy manager. Tauri exposes it via the `tauri::Manager` →
+        // `path().resource_dir()` route; the python tarball is extracted
+        // under `<resource_dir>/python/` by the release CI (see release.yml).
+        // Missing in dev builds and on non-bundled paths — TvProxyManager
+        // silently falls back to PATH detection in that case.
+        use tauri::Manager;
+        if let Ok(rdir) = h.path().resource_dir() {
+            self.tv_proxy.set_bundled_python_dir(rdir.join("python"));
+        }
+        let _ = self.app_handle.set(h);
+    }
 
     pub fn emit_log(&self, level: LogLevel, source: &str, message: impl Into<String>) {
         let msg = message.into();
