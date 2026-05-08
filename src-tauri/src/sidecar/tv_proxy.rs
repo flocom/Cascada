@@ -54,19 +54,29 @@ use tokio::sync::Mutex;
 #[cfg(windows)]
 fn bind_to_kill_on_close_job(child: &Child) -> std::io::Result<()> {
     use std::sync::OnceLock;
-    use windows_sys::Win32::Foundation::HANDLE;
-    use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    };
 
-    static JOB: OnceLock<usize> = OnceLock::new();
+    // Cache the job handle as a raw `isize` (HANDLE's underlying repr
+    // in the windows crate). HANDLE itself is `!Sync` so it can't go
+    // straight into a `OnceLock`, but the kernel handle is just an
+    // integer behind the wrapper.
+    static JOB: OnceLock<isize> = OnceLock::new();
 
-    let job_handle: HANDLE = *JOB.get_or_init(|| {
-        let h = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-        if h.is_null() { return 0usize; }
+    let job_raw: isize = *JOB.get_or_init(|| {
+        // Anonymous job (no name), default security descriptor.
+        let h = unsafe { CreateJobObjectW(None, windows::core::PCWSTR::null()) };
+        let h = match h {
+            Ok(h) if !h.is_invalid() => h,
+            _ => return 0,
+        };
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         let ok = unsafe {
@@ -77,24 +87,23 @@ fn bind_to_kill_on_close_job(child: &Child) -> std::io::Result<()> {
                 std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
             )
         };
-        if ok == 0 { return 0usize; }
-        h as usize
-    }) as HANDLE;
+        if ok.is_err() { return 0; }
+        h.0 as isize
+    });
 
-    if job_handle.is_null() {
+    if job_raw == 0 {
         return Err(std::io::Error::other("job object init failed"));
     }
+    let job_handle = HANDLE(job_raw as *mut _);
+
     let pid = child.id().ok_or_else(|| std::io::Error::other("child has no PID"))?;
-    let proc_handle = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SET_QUOTA, 0, pid) };
-    if proc_handle.is_null() {
-        return Err(std::io::Error::last_os_error());
-    }
-    let assigned = unsafe { AssignProcessToJobObject(job_handle, proc_handle) };
-    let close_err = unsafe { windows_sys::Win32::Foundation::CloseHandle(proc_handle) };
-    let _ = close_err;
-    if assigned == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
+    let proc_handle = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SET_QUOTA, false.into(), pid) }
+        .map_err(|e| std::io::Error::other(format!("OpenProcess: {e}")))?;
+    let assign_result = unsafe { AssignProcessToJobObject(job_handle, proc_handle) };
+    // Close the per-process handle regardless of assignment outcome —
+    // the job keeps its own reference to the process internally.
+    let _ = unsafe { CloseHandle(proc_handle) };
+    assign_result.map_err(|e| std::io::Error::other(format!("AssignProcessToJobObject: {e}")))?;
     Ok(())
 }
 

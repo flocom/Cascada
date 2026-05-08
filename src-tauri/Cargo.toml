@@ -1,6 +1,6 @@
 [package]
 name = "cascada"
-version = "0.5.9"
+version = "0.5.10"
 edition = "2021"
 description = "Copy trading desktop app"
 
@@ -30,7 +30,7 @@ directories = "5"
 # can't leak children that lock files the next installer needs to
 # overwrite (see _asyncio.pyd file-in-use error reports).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = [
+windows = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_System_JobObjects",
   "Win32_System_Threading",
