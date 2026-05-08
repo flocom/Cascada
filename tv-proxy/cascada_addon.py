@@ -156,6 +156,12 @@ class TVBridge:
     last_equity: float = 0.0
     last_currency: str = "USD"
     write_lock: threading.Lock = field(default_factory=threading.Lock)
+    # Diagnostic: track which (host, /accounts/...-shaped path-prefix)
+    # combinations the proxy has already mentioned so we don't flood
+    # the log when discovery is failing. Each unique combo gets exactly
+    # one "seen-but-ignored" entry so the user can paste them back to
+    # us when reporting "no account detected" issues.
+    _seen_account_paths: set[str] = field(default_factory=set)
 
     # ─── Lifecycle ──────────────────────────────────────────────────
 
@@ -234,18 +240,38 @@ class TVBridge:
     # ─── Auto-discovery ───────────────────────────────────────────────
 
     def _try_auto_discover(self, flow: "http.HTTPFlow") -> None:  # type: ignore[name-defined]
-        m = _DISCOVER_RE.match(flow.request.pretty_url)
+        url = flow.request.pretty_url
+        m = _DISCOVER_RE.match(url)
         if not m:
+            # Diagnostic: surface non-matching URLs that LOOK like
+            # account endpoints. Helps debug "no account detected"
+            # reports — the user can share the log and we can extend
+            # the regex without trial-and-error.
+            if "/accounts/" in url and "tradingview" in url:
+                key = url.split("?", 1)[0].rsplit("/", 1)[0][:200]
+                if key not in self._seen_account_paths:
+                    self._seen_account_paths.add(key)
+                    self._log(f"saw account-shaped URL but didn't match discovery regex: {flow.request.method} {key}")
             return
         host, account_id = m.group(1), m.group(2)
-        # Cheap sanity filter: TV originates the request, so its referer or
-        # origin header points at tradingview.com (or *.tradingview.com).
-        # Skip anything without that signal so we don't latch onto random
-        # /accounts/.../state endpoints from unrelated APIs the proxy might
-        # see (corp tools, dev environments, etc.).
+        # Sanity filter: the request must look like it really comes from
+        # TV. We accept either:
+        #   - referer / origin header containing tradingview.com
+        #     (browser-originated XHR)
+        #   - the host itself being a tradingview.com subdomain
+        #     (server-side or service-worker requests with no referer,
+        #     which is what some TV-broker integrations actually do)
+        # without the second branch, real TV traffic would silently
+        # bypass discovery — the failure mode we shipped in 0.5.x.
         ref = (flow.request.headers.get("referer", "")
                + "|" + flow.request.headers.get("origin", ""))
-        if "tradingview.com" not in ref:
+        host_ok = "tradingview.com" in host
+        ref_ok = "tradingview.com" in ref
+        if not (host_ok or ref_ok):
+            key = f"{host}|noref"
+            if key not in self._seen_account_paths:
+                self._seen_account_paths.add(key)
+                self._log(f"discovery skipped (no tradingview.com in referer/origin/host): {host} {account_id}")
             return
         self._log(f"auto-discovered TV broker={host} account={account_id}")
         self.configure(host, account_id, self.cascada_root_override)
