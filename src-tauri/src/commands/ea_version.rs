@@ -1,16 +1,24 @@
-//! Compare installed EA / cBot binaries with the ones this build of Cascada
-//! embeds. The comparison is a byte-for-byte check against the embedded
-//! `include_bytes!` constants — no file timestamp or version string needed.
+//! Compare installed EA / cBot artifacts with the ones this build of
+//! Cascada embeds.
+//!
+//! For MT4/MT5 we compare the `.mq4`/`.mq5` SOURCE, not the compiled
+//! `.ex4`/`.ex5` — MetaEditor's compilation is non-deterministic
+//! (timestamps, build IDs baked into the binary), so byte-comparing the
+//! compiled output produced "out of date" on every Cascada release even
+//! when the source hadn't changed. Source bytes are stable: same source
+//! → same bytes → no spurious update prompts. Cascada writes both the
+//! source and the compiled binary side-by-side on install (see
+//! `install_mt.rs::write_mt_to`), so the source file is always present
+//! when the user installed via Cascada.
+//!
+//! For cTrader we still byte-compare the `.algo` because it's a signed
+//! container we ship pre-built, and Spotware's signing IS deterministic
+//! enough not to flap.
 //!
 //! Returns one `EaStatus` per discovered install location so the UI can
 //! show exactly which terminal(s) are out of date.
-//!
-//! "Out of date" here means: the file on disk differs from what the
-//! current Cascada bundle would install. If the user edited the EA by
-//! hand that counts as out of date too — running the updater overwrites
-//! their edit, which is the usual expectation.
 use super::install_ctrader::{discover_ctrader_roots, CTRADER_BOT_ALGO};
-use super::install_mt::{discover_mt_terminals, MT4_EA_BIN, MT5_EA_BIN};
+use super::install_mt::{discover_mt_terminals, MT4_EA_SRC, MT5_EA_SRC};
 use crate::core::model::Platform;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -38,23 +46,23 @@ pub async fn check_ea_versions() -> Result<Vec<EaStatus>, String> {
 fn gather_sync() -> Vec<EaStatus> {
     let mut out: Vec<EaStatus> = Vec::new();
 
-    // MT4 — `MQL4/Experts/CascadaBridge.ex4`
+    // MT4 — compare source (.mq4), not the non-deterministically compiled .ex4.
     for experts in discover_mt_terminals("MQL4") {
         if let Some(s) = compare_file(
-            experts.join("CascadaBridge.ex4"),
+            experts.join("CascadaBridge.mq4"),
             Platform::MT4,
-            MT4_EA_BIN,
+            MT4_EA_SRC.as_bytes(),
         ) {
             out.push(s);
         }
     }
 
-    // MT5 — `MQL5/Experts/CascadaBridge.ex5`
+    // MT5 — same, compare source (.mq5).
     for experts in discover_mt_terminals("MQL5") {
         if let Some(s) = compare_file(
-            experts.join("CascadaBridge.ex5"),
+            experts.join("CascadaBridge.mq5"),
             Platform::MT5,
-            MT5_EA_BIN,
+            MT5_EA_SRC.as_bytes(),
         ) {
             out.push(s);
         }
