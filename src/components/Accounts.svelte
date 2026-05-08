@@ -428,14 +428,21 @@
           {:else if tvStatus && !tvStatus.installed}
             <div class="install-row">
               <button class="primary" on:click={setupTvProxy} disabled={tvBusy !== "idle"}>
-                {tvBusy === "setup" ? "Installing…" : "Install proxy"}
+                {#if tvBusy === "setup"}<span class="spinner" aria-hidden="true"></span>Installing…{:else}Install proxy{/if}
               </button>
             </div>
-            <p class="hint">
-              One-time setup (~30 s): Cascada provisions a Python venv and installs
-              <a href="https://mitmproxy.org/" target="_blank" rel="noreferrer">mitmproxy</a>.
-              No system changes.
-            </p>
+            {#if tvBusy === "setup"}
+              <div class="setup-progress">
+                <div class="setup-progress-bar"><div class="setup-progress-fill"></div></div>
+                <span class="muted small">Provisioning Python venv, installing mitmproxy, generating CA cert. ~30 s.</span>
+              </div>
+            {:else}
+              <p class="hint">
+                One-time setup (~30 s): Cascada provisions a Python venv and installs
+                <a href="https://mitmproxy.org/" target="_blank" rel="noreferrer">mitmproxy</a>.
+                No system changes.
+              </p>
+            {/if}
           {:else if tvStatus && !tvStatus.browserPath}
             <div class="browser-required">
               <div class="py-required-head">
@@ -451,7 +458,7 @@
           {:else}
             <div class="install-row">
               <button class="primary" on:click={openTvBrowser} disabled={tvBusy !== "idle" || !tvStatus?.browserReady}>
-                {tvBusy === "open" ? "Opening…" : "Open TradingView →"}
+                {#if tvBusy === "open"}<span class="spinner" aria-hidden="true"></span>Opening…{:else}Open TradingView →{/if}
               </button>
               {#if tvStatus?.running}
                 <button on:click={stopTvProxy} disabled={tvBusy !== "idle"} title="Stop the mitmproxy sidecar (closes the proxy, the browser window stays)">
@@ -772,6 +779,42 @@
     background: var(--primary); color: #fff;
   }
   .btn-link.primary:hover { filter: brightness(1.06); }
+
+  /* Inline spinner used inside primary buttons during async work. */
+  .spinner {
+    display: inline-block;
+    width: 12px; height: 12px;
+    margin-right: 8px;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    vertical-align: -2px;
+    opacity: 0.85;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Indeterminate progress bar for the venv + pip install phase. The
+     fill segment slides across to communicate "work is happening" without
+     pretending to know the actual percentage. */
+  .setup-progress {
+    display: flex; flex-direction: column; gap: 6px;
+    padding: 4px 0;
+  }
+  .setup-progress-bar {
+    height: 4px; border-radius: 999px;
+    background: var(--border);
+    overflow: hidden;
+  }
+  .setup-progress-fill {
+    height: 100%; width: 35%; border-radius: 999px;
+    background: linear-gradient(90deg, var(--primary), #60a5fa);
+    animation: setup-slide 1.4s ease-in-out infinite;
+  }
+  @keyframes setup-slide {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(380%); }
+  }
 
   .empty-title { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
   .empty-body { font-size: 13px; color: var(--text-muted); }

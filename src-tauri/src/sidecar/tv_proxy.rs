@@ -651,16 +651,20 @@ fn find_chromium_browser() -> Option<PathBuf> {
 /// hash the CA cert's SPKI. Output is `base64(sha256(SPKI_DER))`, the
 /// exact format Chrome wants in `--ignore-certificate-errors-spki-list`.
 async fn compute_cert_spki(venv_python: &Path, cert: &Path) -> Result<String> {
-    const SCRIPT: &str = "\
-import hashlib, base64, sys\n\
-from cryptography import x509\n\
-from cryptography.hazmat.primitives import serialization\n\
-with open(sys.argv[1], 'rb') as f:\n\
-    c = x509.load_pem_x509_certificate(f.read())\n\
-spki = c.public_key().public_bytes(\n\
-    encoding=serialization.Encoding.DER,\n\
-    format=serialization.PublicFormat.SubjectPublicKeyInfo)\n\
-print(base64.b64encode(hashlib.sha256(spki).digest()).decode())\n";
+    // Raw string preserves the 4-space indentation inside `with`; the
+    // previous `"\<newline>"` form silently ate leading whitespace
+    // (Rust's line-continuation rule), producing an unindented Python
+    // script that crashed with `IndentationError`.
+    const SCRIPT: &str = r#"import hashlib, base64, sys
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+with open(sys.argv[1], 'rb') as f:
+    c = x509.load_pem_x509_certificate(f.read())
+spki = c.public_key().public_bytes(
+    encoding=serialization.Encoding.DER,
+    format=serialization.PublicFormat.SubjectPublicKeyInfo)
+print(base64.b64encode(hashlib.sha256(spki).digest()).decode())
+"#;
     let out = cmd(venv_python)
         .arg("-c").arg(SCRIPT).arg(cert)
         .output().await?;
