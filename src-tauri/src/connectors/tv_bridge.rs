@@ -1,10 +1,11 @@
 //! TradingView bridge — discovery + spawn for TV-backed accounts.
 //!
 //! TV is a browser product, so the broker API is intercepted by an external
-//! Python sidecar (`cascada-tv-proxy`, a mitmproxy addon) that watches the
-//! user's TradingView session and writes events to a local folder in the
-//! same wire format as the cTrader cBot / MT EA. Cascada then attaches via
-//! the generic `file_bridge::spawn_with_dir` — no TV-specific runtime path.
+//! Python sidecar (`tv-proxy/cascada_addon.py`, a mitmproxy addon shipped
+//! in this repo) that watches the user's TradingView session and writes
+//! events to a local folder in the same wire format as the cTrader cBot /
+//! MT EA. Cascada then attaches via the generic `file_bridge::spawn_with_dir`
+//! — no TV-specific runtime path.
 //!
 //! Discovery folder layout:
 //!

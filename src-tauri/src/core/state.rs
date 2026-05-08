@@ -486,12 +486,13 @@ impl AppState {
     /// typically the TV `account_id`) or create one on the fly. Always
     /// auto-roled as Master — TV is read-only in v1.
     pub async fn find_or_create_tv_account(self: &Arc<Self>, login: &str) -> Account {
-        let existing_id = self.accounts.iter()
+        // Single map pass: clone the matching value directly instead of
+        // collecting the id and re-looking it up (which races with removal
+        // and panics on .unwrap()).
+        let existing = self.accounts.iter()
             .find(|kv| kv.value().platform == Platform::TradingView && kv.value().login == login)
-            .map(|kv| kv.key().clone());
-        if let Some(id) = existing_id {
-            return self.accounts.get(&id).unwrap().clone();
-        }
+            .map(|kv| kv.value().clone());
+        if let Some(a) = existing { return a; }
         let account = Account {
             id: uuid::Uuid::new_v4().to_string(),
             platform: Platform::TradingView,

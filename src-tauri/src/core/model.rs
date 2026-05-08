@@ -9,10 +9,11 @@ pub enum Platform {
     MT4,
     MT5,
     /// TradingView account (PaperTrading or any TV-integrated broker). The
-    /// `cascada-tv-proxy` Python sidecar (mitmproxy addon) intercepts the
-    /// browser's TV broker API and writes events.jsonl in the same wire
-    /// format as the cTrader cBot / MT EA, so the engine treats it like any
-    /// other connector. Cascada watches `<cascada_root>/TradingView/<login>/`.
+    /// `tv-proxy/cascada_addon.py` Python sidecar shipped in this repo
+    /// intercepts the browser's TV broker API and writes events.jsonl in
+    /// the same wire format as the cTrader cBot / MT EA, so the engine
+    /// treats it like any other connector. Cascada watches
+    /// `<cascada_root>/TradingView/<login>/`.
     #[serde(rename = "TradingView")]
     TradingView,
 }
