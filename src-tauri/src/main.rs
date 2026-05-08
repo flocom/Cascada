@@ -3,6 +3,7 @@
 mod core;
 mod connectors;
 mod commands;
+mod sidecar;
 
 use crate::core::state::AppState;
 use std::sync::Arc;
@@ -20,22 +21,41 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(state.clone())
-        .setup(move |app| {
-            let handle = app.handle().clone();
-            state.attach_app_handle(handle.clone());
-            let s = state.clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = s.load_from_disk().await {
-                    tracing::warn!("failed to load state: {e}");
+        .setup({
+            let state = state.clone();
+            move |app| {
+                let handle = app.handle().clone();
+                state.attach_app_handle(handle.clone());
+                let s = state.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = s.load_from_disk().await {
+                        tracing::warn!("failed to load state: {e}");
+                    }
+                    s.start_engine().await;
+                    s.spawn_save_loop();
+                    s.reconnect_all();
+                    s.spawn_ctrader_discovery();
+                    s.spawn_mt_discovery();
+                    s.spawn_tv_discovery();
+                    s.spawn_tv_proxy_autostart();
+                });
+                Ok(())
+            }
+        })
+        // Tear down the supervised mitmdump child when the user quits.
+        // `kill_on_drop(true)` is a backstop for hard exits; this branch
+        // covers the clean-exit path so the child gets a SIGTERM and a
+        // chance to flush state before its pipes close.
+        .on_window_event({
+            let state = state.clone();
+            move |_window, event| {
+                if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                    let tp = state.tv_proxy.clone();
+                    tauri::async_runtime::block_on(async move {
+                        let _ = tp.stop().await;
+                    });
                 }
-                s.start_engine().await;
-                s.spawn_save_loop();
-                s.reconnect_all();
-                s.spawn_ctrader_discovery();
-                s.spawn_mt_discovery();
-                s.spawn_tv_discovery();
-            });
-            Ok(())
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_accounts,
@@ -61,6 +81,10 @@ fn main() {
             commands::list_subscriptions,
             commands::request_symbols,
             commands::list_symbols,
+            commands::tv_proxy_status,
+            commands::tv_proxy_setup,
+            commands::tv_proxy_start,
+            commands::tv_proxy_stop,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cascada");
