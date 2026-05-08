@@ -110,13 +110,30 @@ def to_side(s: str) -> str:
 
 # ────────────────────────────── Auto-discovery pattern ──────────────────────
 
-# Match any `https://<host>/accounts/<id>/{state|positions|orders|...}` URL
-# coming from a TV-originated request. The endpoint suffixes here are the
-# stable subset every TV broker integration exposes, so a single hit on the
-# first request lets us snap broker_url + account_id without a manual flag.
-_DISCOVER_RE = re.compile(
+# Two URL families auto-discovery latches onto, both rooted at a
+# `*.tradingview.com` host:
+#
+#   1. TV-broker integration (FTMO, OANDA, Forex.com, …):
+#         `/accounts/<id>/(state|positions|orders|executions|…)`
+#      — the canonical API every external broker exposes.
+#
+#   2. TV PaperTrading (TV's own simulated account):
+#         `papertrading.tradingview.com/trading/<verb>/<id>`
+#      — completely different URL shape (`<id>` here is the account
+#        number, not an order id), so we need a second pattern. Verbs
+#        observed in DevTools traces: place, modify, close, cancel,
+#        positions, orders, state, history, instruments.
+#
+# A single hit on either family lets us snap broker_url + account_id
+# without the user setting any flag. Hitting both is fine: the first
+# match wins (we early-out once `broker_url` is set).
+_DISCOVER_BROKER_RE = re.compile(
     r'^https?://([^/]+)/accounts/([^/?]+)/'
     r'(?:state|positions|orders|executions|instruments|history|preferences|configuration)\b'
+)
+_DISCOVER_PAPER_RE = re.compile(
+    r'^https?://(papertrading\.tradingview\.com)/trading/'
+    r'(?:place|modify|close|cancel|positions|orders|state|history|instruments)/([^/?]+)'
 )
 
 
@@ -204,6 +221,28 @@ class TVBridge:
         method = flow.request.method
         url = flow.request.pretty_url
 
+        # Diagnostic for PaperTrading: log the first request shape we
+        # see on each verb so we can build proper handlers without
+        # round-tripping. The PaperTrading API doesn't have public
+        # schema docs and we're reverse-engineering it from the live
+        # session. Cap body logging at ~400 chars per verb to avoid
+        # flooding the log panel.
+        if "papertrading.tradingview.com" in url and method != "GET":
+            verb = url.split("/trading/", 1)[-1].split("/", 1)[0]
+            key = f"papertrading|{method}|{verb}"
+            if key not in self._seen_account_paths:
+                self._seen_account_paths.add(key)
+                ctype = flow.request.headers.get("content-type", "")
+                body_preview = ""
+                if flow.request.content:
+                    raw = flow.request.content[:400]
+                    try:
+                        body_preview = raw.decode("utf-8", errors="replace")
+                    except Exception:
+                        body_preview = repr(raw)
+                self._log(f"PaperTrading {method} /trading/{verb}/… "
+                          f"ct={ctype!r} body={body_preview!r}")
+
         if method == "DELETE":
             if "/positions/" in url:
                 pid = url.rsplit("/", 1)[-1].split("?")[0]
@@ -241,40 +280,43 @@ class TVBridge:
 
     def _try_auto_discover(self, flow: "http.HTTPFlow") -> None:  # type: ignore[name-defined]
         url = flow.request.pretty_url
-        m = _DISCOVER_RE.match(url)
-        if not m:
-            # Diagnostic: surface non-matching URLs that LOOK like
-            # account endpoints. Helps debug "no account detected"
-            # reports — the user can share the log and we can extend
-            # the regex without trial-and-error.
-            if "/accounts/" in url and "tradingview" in url:
-                key = url.split("?", 1)[0].rsplit("/", 1)[0][:200]
+
+        # Try TV-broker pattern first (most common across integrations).
+        m = _DISCOVER_BROKER_RE.match(url)
+        if m:
+            host, account_id = m.group(1), m.group(2)
+            # Sanity filter: the request must look like it really comes
+            # from TV. Accept either tradingview.com in the host, or in
+            # referer/origin (covers browser XHR and service-worker /
+            # server-side calls that lack those headers).
+            ref = (flow.request.headers.get("referer", "")
+                   + "|" + flow.request.headers.get("origin", ""))
+            if "tradingview.com" not in host and "tradingview.com" not in ref:
+                key = f"{host}|noref"
                 if key not in self._seen_account_paths:
                     self._seen_account_paths.add(key)
-                    self._log(f"saw account-shaped URL but didn't match discovery regex: {flow.request.method} {key}")
+                    self._log(f"discovery skipped (no tradingview.com in referer/origin/host): {host} {account_id}")
+                return
+            self._log(f"auto-discovered TV broker={host} account={account_id}")
+            self.configure(host, account_id, self.cascada_root_override)
             return
-        host, account_id = m.group(1), m.group(2)
-        # Sanity filter: the request must look like it really comes from
-        # TV. We accept either:
-        #   - referer / origin header containing tradingview.com
-        #     (browser-originated XHR)
-        #   - the host itself being a tradingview.com subdomain
-        #     (server-side or service-worker requests with no referer,
-        #     which is what some TV-broker integrations actually do)
-        # without the second branch, real TV traffic would silently
-        # bypass discovery — the failure mode we shipped in 0.5.x.
-        ref = (flow.request.headers.get("referer", "")
-               + "|" + flow.request.headers.get("origin", ""))
-        host_ok = "tradingview.com" in host
-        ref_ok = "tradingview.com" in ref
-        if not (host_ok or ref_ok):
-            key = f"{host}|noref"
+
+        # Fall back to PaperTrading pattern.
+        m = _DISCOVER_PAPER_RE.match(url)
+        if m:
+            host, account_id = m.group(1), m.group(2)
+            self._log(f"auto-discovered TV PaperTrading account={account_id}")
+            self.configure(host, account_id, self.cascada_root_override)
+            return
+
+        # Diagnostic for unmatched URLs that LOOK like account/trading
+        # endpoints — helps debug "no account detected" reports without
+        # the user / us trial-and-erroring on the regex.
+        if "tradingview" in url and ("/accounts/" in url or "/trading/" in url):
+            key = url.split("?", 1)[0].rsplit("/", 1)[0][:200]
             if key not in self._seen_account_paths:
                 self._seen_account_paths.add(key)
-                self._log(f"discovery skipped (no tradingview.com in referer/origin/host): {host} {account_id}")
-            return
-        self._log(f"auto-discovered TV broker={host} account={account_id}")
-        self.configure(host, account_id, self.cascada_root_override)
+                self._log(f"saw TV account/trading URL but didn't match discovery regex: {flow.request.method} {key}")
 
     # ─── Event handlers ──────────────────────────────────────────────
 
@@ -460,7 +502,20 @@ class TVBridge:
     def _is_relevant(self, flow: "http.HTTPFlow") -> bool:  # type: ignore[name-defined]
         if not (self.broker_url and self.account_id):
             return False
-        return self.base_path() in flow.request.pretty_url
+        url = flow.request.pretty_url
+        # TV-broker integrations ("<broker>.tradingview.com/accounts/<id>/…").
+        if self.base_path() in url:
+            return True
+        # PaperTrading ("papertrading.tradingview.com/trading/<verb>/<id>"):
+        # the account id sits at the *end* of the verb path instead of
+        # inside an `/accounts/` segment, so `base_path()`'s substring
+        # check would never match. Recognise this layout explicitly.
+        if (self.broker_url.endswith("papertrading.tradingview.com")
+                and "/trading/" in url
+                and (url.rstrip("/").split("?", 1)[0].endswith(f"/{self.account_id}")
+                     or f"/{self.account_id}?" in url)):
+            return True
+        return False
 
     def _emit(self, frame: dict[str, Any]) -> None:
         line = json.dumps(frame, separators=(",", ":")) + "\n"
