@@ -5,6 +5,7 @@ use crate::core::events::{LogEntry, LogLevel, EVT_ACCOUNT, EVT_LOG, EVT_QUOTE, E
 use crate::core::model::*;
 use crate::core::persistence::{self, Snapshot};
 use crate::core::ticket_map::TicketMap;
+use crate::sidecar::TvProxyManager;
 use anyhow::Result;
 use dashmap::DashMap;
 use parking_lot::RwLock;
@@ -43,6 +44,10 @@ pub struct AppState {
     pub symbols: DashMap<String, Vec<String>>,
     pub event_tx: mpsc::UnboundedSender<ConnectorEvent>,
     event_rx: parking_lot::Mutex<Option<mpsc::UnboundedReceiver<ConnectorEvent>>>,
+    /// Cascada-managed Python sidecar that bridges TradingView browser
+    /// sessions onto the file-bridge protocol. Constructed once at app
+    /// startup; commands access it via `state.tv_proxy.{setup,start,stop}`.
+    pub tv_proxy: Arc<TvProxyManager>,
     app_handle: OnceLock<AppHandle>,
     save_dirty: AtomicBool,
     save_notify: Notify,
@@ -51,6 +56,7 @@ pub struct AppState {
 impl AppState {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
+        let tv_proxy = Arc::new(TvProxyManager::new(tx.clone()));
         Self {
             accounts: DashMap::new(),
             rules: RwLock::new(Vec::new()),
@@ -63,6 +69,7 @@ impl AppState {
             ticket_map: Arc::new(TicketMap::new()),
             event_tx: tx,
             event_rx: parking_lot::Mutex::new(Some(rx)),
+            tv_proxy,
             app_handle: OnceLock::new(),
             save_dirty: AtomicBool::new(false),
             save_notify: Notify::new(),
@@ -515,6 +522,25 @@ impl AppState {
 
     pub fn spawn_tv_discovery(self: &Arc<Self>) {
         crate::connectors::tv_bridge::spawn_discovery(self.clone());
+    }
+
+    /// If a TradingView account is already in the saved snapshot, kick off
+    /// the bundled sidecar in the background so the user doesn't have to
+    /// click "Start" on every Cascada launch. Errors land in the log
+    /// stream — failure shouldn't block app startup. No-op when no TV
+    /// account exists.
+    pub fn spawn_tv_proxy_autostart(self: &Arc<Self>) {
+        let has_tv = self.accounts.iter()
+            .any(|kv| kv.value().platform == Platform::TradingView);
+        if !has_tv { return; }
+        let this = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = this.tv_proxy.start().await {
+                this.emit_log(LogLevel::Warn, "tv-proxy",
+                    format!("auto-start failed: {e} — open the TradingView \
+                             tab in Accounts and click Setup."));
+            }
+        });
     }
 
     pub async fn disconnect(&self, id: &str) -> Result<()> {
