@@ -369,7 +369,16 @@ fn contains_ci(haystack: &str, needle: &str) -> bool {
 }
 
 fn translate_symbol(rule: &CopyRule, master_sym: &str) -> String {
-    let base = rule.symbol_map.get(master_sym).cloned().unwrap_or_else(|| master_sym.to_string());
+    // Prefer an exact-case HashMap hit (O(1)), fall back to a case-insensitive
+    // scan so a master ticker like `XAUUSDb` (broker suffix in lowercase)
+    // still matches a user-entered override of `XAUUSDB` (or any other case).
+    // The fallback is only walked when the exact lookup misses, so there's
+    // no perf regression for the common path.
+    let base = rule.symbol_map.get(master_sym).cloned()
+        .or_else(|| rule.symbol_map.iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(master_sym))
+            .map(|(_, v)| v.clone()))
+        .unwrap_or_else(|| master_sym.to_string());
     format!("{}{base}{}", rule.symbol_prefix, rule.symbol_suffix)
 }
 
