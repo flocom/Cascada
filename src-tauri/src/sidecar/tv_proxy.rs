@@ -150,9 +150,10 @@ fn cmd<S: AsRef<OsStr>>(program: S) -> Command {
      .env("PYTHONUTF8", "1");
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         // CREATE_NO_WINDOW = 0x08000000 — suppresses the conhost window
         // for child processes that would otherwise inherit a console.
+        // tokio::process::Command exposes `creation_flags` directly on
+        // Windows, no trait import needed.
         c.creation_flags(0x08000000);
     }
     c
