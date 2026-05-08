@@ -133,7 +133,10 @@ _DISCOVER_BROKER_RE = re.compile(
 )
 _DISCOVER_PAPER_RE = re.compile(
     r'^https?://(papertrading\.tradingview\.com)/trading/'
-    r'(?:place|modify|close|cancel|positions|orders|state|history|instruments)/([^/?]+)'
+    # Verbs observed in the wild include `close_position`, `modify_position`,
+    # `cancel_order` etc. — match a generic `<word>` to catch them all,
+    # then require an account-id-shaped tail (digits or hex).
+    r'(?:[a-z_]+)/(\d+|[A-Za-z0-9_-]+)\b'
 )
 
 
@@ -215,20 +218,18 @@ class TVBridge:
             if tok:
                 self.auth_token = tok
 
-        if not self._is_relevant(flow):
-            return
-
-        method = flow.request.method
+        # PaperTrading reverse-engineering aid: log the first request
+        # shape we see for each (method, verb) on the PaperTrading host,
+        # BEFORE the `_is_relevant` filter. Some PaperTrading endpoints
+        # (e.g. `/trading/account`) don't have the account id in the
+        # path, so they'd be filtered out before getting here — but
+        # their bodies are still useful for understanding the API.
+        # Cap body preview at ~400 chars per (method, verb) combo.
         url = flow.request.pretty_url
-
-        # Diagnostic for PaperTrading: log the first request shape we
-        # see on each verb so we can build proper handlers without
-        # round-tripping. The PaperTrading API doesn't have public
-        # schema docs and we're reverse-engineering it from the live
-        # session. Cap body logging at ~400 chars per verb to avoid
-        # flooding the log panel.
+        method = flow.request.method
         if "papertrading.tradingview.com" in url and method != "GET":
-            verb = url.split("/trading/", 1)[-1].split("/", 1)[0]
+            tail = url.split("/trading/", 1)[-1] if "/trading/" in url else url
+            verb = (tail.split("/", 1)[0] or "<root>").split("?", 1)[0]
             key = f"papertrading|{method}|{verb}"
             if key not in self._seen_account_paths:
                 self._seen_account_paths.add(key)
@@ -240,8 +241,11 @@ class TVBridge:
                         body_preview = raw.decode("utf-8", errors="replace")
                     except Exception:
                         body_preview = repr(raw)
-                self._log(f"PaperTrading {method} /trading/{verb}/… "
+                self._log(f"PaperTrading {method} /trading/{verb} "
                           f"ct={ctype!r} body={body_preview!r}")
+
+        if not self._is_relevant(flow):
+            return
 
         if method == "DELETE":
             if "/positions/" in url:
