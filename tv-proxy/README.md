@@ -12,6 +12,31 @@ Cascada's `tv_bridge::spawn_discovery` polls
 as a Master automatically when the proxy starts writing. No extra Cascada
 configuration required.
 
+## Quick start (one command)
+
+A bootstrap script handles Python venv + mitmproxy install + CA cert trust +
+launching the sidecar. The addon then auto-discovers your broker host and
+account id from the first TV API call it sees, so there's nothing to look up
+in DevTools.
+
+From the Cascada repo root:
+
+```bash
+# macOS / Linux
+./tv-proxy/setup.sh
+
+# Windows (PowerShell)
+.\tv-proxy\setup.ps1
+```
+
+Then:
+1. Set your browser HTTP/HTTPS proxy to `127.0.0.1:8080`.
+2. Open TradingView and place any tiny trade.
+3. Cascada auto-attaches the TV account as a Master.
+
+Re-running the script is safe — every step is idempotent. Press `Ctrl-C` to
+stop the sidecar.
+
 ## What it captures
 
 | Cascada wire event | TV API call |
@@ -24,19 +49,22 @@ configuration required.
 | pip_size on every event | `GET  /instruments` (cached, refreshed every 5 min) |
 
 > ⚠️ TV PaperTrading's API is **not** the same as a real broker integration
-> — the proxy works for both because the URL prefix is configurable, but
-> you must capture the host TV is actually talking to from your browser
-> (DevTools → Network → filter by `accounts/`).
+> — the proxy works for both because auto-discovery snaps the host from
+> whatever request comes in first. The referer/origin guard ensures only
+> tradingview.com-originated requests latch on.
 
-## Setup
+## Manual install (fallback)
 
-### 1. Install
+The bootstrap script does the steps below for you. Use this path only if
+the script fails (locked-down system, no sudo, custom Python env, etc).
+
+### 1. Install mitmproxy + requests
 
 ```bash
 pip install mitmproxy requests
 ```
 
-The addon also needs `requests` for the `/state` and `/instruments` polls
+The addon needs `requests` for the `/state` and `/instruments` polls
 (mitmproxy ships with its own `httpx`, but those calls go *outside*
 mitmproxy's intercept loop, so we use a regular sync client).
 
@@ -48,24 +76,22 @@ Run mitmproxy once so it generates the cert:
 mitmdump
 ```
 
-Then install `~/.mitmproxy/mitmproxy-ca-cert.pem` in your browser's trust
-store. Without this, TradingView's HTTPS calls won't decrypt and the addon
-will see nothing.
+Then install `~/.mitmproxy/mitmproxy-ca-cert.pem` (`.cer` on Windows) in
+your browser's trust store. Without this, TradingView's HTTPS calls won't
+decrypt and the addon will see nothing.
 
-### 3. Find your TV broker host + account id
+- **macOS**: `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/.mitmproxy/mitmproxy-ca-cert.pem`
+- **Linux**: `sudo cp ~/.mitmproxy/mitmproxy-ca-cert.pem /usr/local/share/ca-certificates/mitmproxy.crt && sudo update-ca-certificates` — Chrome on Linux additionally reads `~/.pki/nssdb`, see `setup.sh` for that variant.
+- **Windows**: `certutil -addstore -f -user ROOT %USERPROFILE%\.mitmproxy\mitmproxy-ca-cert.cer` (no UAC needed).
+- **Firefox**: each profile has its own NSS db. Import the cert via *Options → Privacy & Security → Certificates → Authorities*.
 
-1. Open TradingView in the proxied browser, log in, switch to the broker
-   you want to mirror (PaperTrading or any integrated broker).
-2. Open DevTools → Network tab.
-3. Place a tiny test trade. Look for a request to
-   `https://<broker-host>/accounts/<account-id>/orders?...` — the host and
-   id you need are the bold parts.
-
-### 4. Run the bridge
-
-From the Cascada repo root:
+### 3. Run the bridge
 
 ```bash
+# Auto-discovery (recommended) — broker URL + account id snap from first TV request:
+mitmdump -s tv-proxy/cascada_addon.py
+
+# Manual override (skip auto-discovery, pin a specific account):
 mitmdump -s tv-proxy/cascada_addon.py \
     --set tv_broker_url=paper-trading.tradingview.com \
     --set tv_account_id=PA-1234567
@@ -80,12 +106,10 @@ syncing the folder over a network share):
 
 ```bash
 mitmdump -s tv-proxy/cascada_addon.py \
-    --set tv_broker_url=paper-trading.tradingview.com \
-    --set tv_account_id=PA-1234567 \
     --set cascada_root=/Volumes/share/cascada-data
 ```
 
-### 5. Point your browser at the proxy
+### 4. Point your browser at the proxy
 
 mitmproxy's default port is `8080`. Set your browser's HTTP/HTTPS proxy to
 `127.0.0.1:8080` while you trade on TV.
@@ -120,8 +144,8 @@ To capture the offset visually:
   refresh). The `cmd.jsonl` file is created and read so the protocol stays
   symmetric, but writes from Cascada are logged-and-dropped.
 - **One TV session per account.** The `account_id` keys the folder; if you
-  switch brokers (TV PaperTrading → an OANDA-integrated TV), use a new
-  `tv_account_id` so they don't collide.
+  switch brokers (TV PaperTrading → an OANDA-integrated TV), restart
+  mitmdump so auto-discovery picks the new account.
 - **Partial closes** are reported as `close` (full) — Cascada doesn't
   model partial closes today; the slave receives a full close.
 - **TV ToS.** mitmproxy reverse-engineers TV's broker API. Fine for
