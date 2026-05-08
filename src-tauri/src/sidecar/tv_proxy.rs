@@ -30,12 +30,30 @@ use crate::core::events::LogLevel;
 use crate::core::model::ConnectorEvent;
 use anyhow::{anyhow, Result};
 use serde::Serialize;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
+
+/// Tokio Command builder with `CREATE_NO_WINDOW` set on Windows. Without
+/// this flag every spawn of `python.exe` / `mitmdump.exe` opens a stray
+/// console window that confuses non-technical users (a black box pops up
+/// next to the app while setup runs). Cross-platform no-op elsewhere.
+#[allow(unused_mut)]
+fn cmd<S: AsRef<OsStr>>(program: S) -> Command {
+    let mut c = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW = 0x08000000 — suppresses the conhost window
+        // for child processes that would otherwise inherit a console.
+        c.creation_flags(0x08000000);
+    }
+    c
+}
 
 /// Embedded addon — written to disk on every `setup()` so users always
 /// run the addon shipped with the current Cascada build.
@@ -156,7 +174,7 @@ impl TvProxyManager {
 
         if !venv_py.exists() {
             self.log(LogLevel::Info, format!("tv-proxy: creating venv at {}", venv.display()));
-            let out = Command::new(&py.path)
+            let out = cmd(&py.path)
                 .arg("-m").arg("venv").arg(&venv)
                 .output().await?;
             if !out.status.success() {
@@ -169,7 +187,7 @@ impl TvProxyManager {
         // pip install — quiet to avoid spamming logs, but keep stderr so
         // failures (network, SSL, etc) surface via `last_error`.
         self.log(LogLevel::Info, "tv-proxy: installing mitmproxy + requests…");
-        let pip = Command::new(&venv_py)
+        let pip = cmd(&venv_py)
             .args(["-m", "pip", "install", "--quiet", "--upgrade",
                    "pip", "mitmproxy", "requests"])
             .output().await?;
@@ -225,8 +243,8 @@ impl TvProxyManager {
         self.log(LogLevel::Info, format!(
             "tv-proxy: launching mitmdump on :{} ({})", self.port, mitmdump.display()));
 
-        let mut cmd = Command::new(&mitmdump);
-        cmd.arg("-s").arg(&addon)
+        let mut spawn = cmd(&mitmdump);
+        spawn.arg("-s").arg(&addon)
             .arg("--listen-port").arg(self.port.to_string())
             // Quiet flow logs — we don't want every TV API hit in the
             // user's log panel. The addon emits its own structured logs
@@ -236,7 +254,7 @@ impl TvProxyManager {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
-        let mut child = cmd.spawn().map_err(|e| {
+        let mut child = spawn.spawn().map_err(|e| {
             anyhow!("spawn mitmdump failed: {e} — re-run setup if Python deps changed")
         })?;
 
@@ -287,7 +305,7 @@ impl TvProxyManager {
         let mitm = mitmdump_path(venv);
         if !mitm.exists() { return; }
         self.log(LogLevel::Info, "tv-proxy: bootstrapping CA cert…");
-        let mut child = match Command::new(&mitm)
+        let mut child = match cmd(&mitm)
             .args(["--listen-port", "18080", "--quiet"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -362,7 +380,7 @@ fn bundled_python_exe(dir: &Path) -> PathBuf {
 /// path) if it reports >= MIN_PY. Used for both the bundled interpreter
 /// and PATH candidates.
 async fn probe_python(exe: &Path) -> Result<PythonInfo> {
-    let out = Command::new(exe)
+    let out = cmd(exe)
         .arg("-c")
         .arg("import sys; print('%d.%d %s' % (sys.version_info.major, sys.version_info.minor, sys.executable))")
         .output().await
@@ -400,11 +418,11 @@ async fn detect_python_on_path() -> Result<PythonInfo> {
     for cand in candidates {
         // `py -3` is the launcher form on Windows — pass `-3` so we don't
         // accidentally probe a Python 2 installation that's still on PATH.
-        let mut cmd = Command::new(cand);
-        if cfg!(target_os = "windows") && *cand == "py" { cmd.arg("-3"); }
-        cmd.arg("-c")
+        let mut probe = cmd(cand);
+        if cfg!(target_os = "windows") && *cand == "py" { probe.arg("-3"); }
+        probe.arg("-c")
            .arg("import sys; print('%d.%d %s' % (sys.version_info.major, sys.version_info.minor, sys.executable))");
-        let out = match cmd.output().await {
+        let out = match probe.output().await {
             Ok(o) => o,
             Err(e) => { last_err = Some(format!("{cand}: {e}")); continue; }
         };
