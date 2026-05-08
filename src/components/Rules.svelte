@@ -53,9 +53,13 @@
   }
   function syncMap() {
     if (!editing) return;
+    // Preserve broker case on both sides — some brokers use suffix tickers
+    // like `XAUUSDb` where the lowercase `b` is significant. The engine
+    // does a case-insensitive fallback when an exact-case map miss happens,
+    // so capitalising here would only get in the way.
     const out: Record<string, string> = {};
     for (const [k, v] of mapPairs) {
-      const kk = k.trim().toUpperCase();
+      const kk = k.trim();
       const vv = v.trim();
       if (kk && vv) out[kk] = vv;
     }
@@ -67,7 +71,7 @@
     syncMap();
   }
   function updateMapping(i: number, side: 0 | 1, value: string) {
-    mapPairs[i][side] = side === 0 ? value.toUpperCase() : value;
+    mapPairs[i][side] = value;
     mapPairs = mapPairs;
     syncMap();
   }
