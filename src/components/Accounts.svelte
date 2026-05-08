@@ -288,12 +288,20 @@
     dispatch("refresh");
   }
 
-  const platforms: { id: Platform; name: string; tag: string }[] = [
+  const platforms: { id: Platform; name: string; tag: string; beta?: boolean }[] = [
     { id: "cTrader", name: "cTrader", tag: "cBot · auto-discovered" },
     { id: "MT4",     name: "MetaTrader 4", tag: "EA · auto-discovered" },
     { id: "MT5",     name: "MetaTrader 5", tag: "EA · auto-discovered" },
-    { id: "TradingView", name: "TradingView", tag: "Sidecar · auto-discovered" },
+    { id: "TradingView", name: "TradingView", tag: "Sidecar · auto-discovered", beta: true },
   ];
+
+  // Surface the "Python 3.10+ not found on PATH" failure as its own panel
+  // (with a python.org link) instead of a wall of red error text. The
+  // string match is brittle on purpose — the only place we generate it is
+  // detect_python() in src-tauri/src/sidecar/tv_proxy.rs.
+  $: pythonMissing = mode === "TradingView"
+    && installStatus?.kind === "err"
+    && /python.*not found on path/i.test(installStatus.text);
 
   $: accountMap = new Map(accounts.map((a) => [a.id, a]));
   $: masters = accounts.filter((a) => a.role === "Master");
@@ -365,7 +373,10 @@
         {#each platforms as p}
           <button class="plat-card" class:active={mode === p.id}
                   on:click={() => { mode = p.id; installStatus = null; }}>
-            <span class="plat-badge {p.id}">{p.id}</span>
+            <div class="plat-badge-row">
+              <span class="plat-badge {p.id}">{p.id}</span>
+              {#if p.beta}<span class="plat-beta">BETA</span>{/if}
+            </div>
             <span class="plat-name">{p.name}</span>
             <span class="plat-tag">{p.tag}</span>
           </button>
@@ -396,37 +407,57 @@
               <span class="tv-err small" title={tvStatus.lastError}>last error: {tvStatus.lastError.length > 60 ? tvStatus.lastError.slice(0, 60) + "…" : tvStatus.lastError}</span>
             {/if}
           </div>
-          <div class="install-row">
-            {#if !tvStatus?.installed}
-              <button class="primary" on:click={setupTvProxy} disabled={tvBusy !== "idle"}>
-                {tvBusy === "setup" ? "Installing…" : "Install proxy"}
-              </button>
-            {:else if !tvStatus?.running}
-              <button class="primary" on:click={startTvProxy} disabled={tvBusy !== "idle"}>
-                {tvBusy === "start" ? "Starting…" : "Start proxy"}
-              </button>
-              <button on:click={setupTvProxy} disabled={tvBusy !== "idle"} title="Reinstall venv + reinstall mitmproxy">
-                Reinstall
-              </button>
-            {:else}
-              <button on:click={stopTvProxy} disabled={tvBusy !== "idle"}>
-                {tvBusy === "stop" ? "Stopping…" : "Stop proxy"}
-              </button>
-            {/if}
-          </div>
-          <ol class="tv-steps">
-            <li>Set your browser HTTP/HTTPS proxy to <code>127.0.0.1:{tvStatus?.port ?? 8080}</code>.</li>
-            <li>
-              Trust the mitmproxy CA cert once
-              {#if tvStatus?.certPath}<code>{tvStatus.certPath}</code>{/if}
-              (browser → Settings → Certificates → Authorities → Import).
-            </li>
-            <li>Open TradingView and place any tiny trade — your TV master account appears here automatically.</li>
-          </ol>
-          <p class="hint">
-            Cascada bundles <a href="https://mitmproxy.org/" target="_blank" rel="noreferrer">mitmproxy</a> + the addon.
-            Needs Python 3.10+ on PATH (auto-detected). Re-running Install is safe.
-          </p>
+          {#if pythonMissing}
+            <div class="py-required">
+              <div class="py-required-head">
+                <strong>Python 3.10+ is required</strong>
+                <span class="muted small">Cascada uses Python to run the mitmproxy sidecar that talks to TradingView.</span>
+              </div>
+              <ol class="py-steps">
+                <li>Download &amp; install Python 3.10 or newer.</li>
+                <li><strong>Windows users:</strong> in the installer, tick <em>“Add Python to PATH”</em> on the first screen — that's the most common reason setup fails.</li>
+                <li>Come back here and click <em>Retry install</em>.</li>
+              </ol>
+              <div class="install-row">
+                <a class="btn-link primary" href="https://www.python.org/downloads/" target="_blank" rel="noreferrer">Download Python →</a>
+                <button on:click={setupTvProxy} disabled={tvBusy !== "idle"}>
+                  {tvBusy === "setup" ? "Retrying…" : "Retry install"}
+                </button>
+              </div>
+            </div>
+          {:else}
+            <div class="install-row">
+              {#if !tvStatus?.installed}
+                <button class="primary" on:click={setupTvProxy} disabled={tvBusy !== "idle"}>
+                  {tvBusy === "setup" ? "Installing…" : "Install proxy"}
+                </button>
+              {:else if !tvStatus?.running}
+                <button class="primary" on:click={startTvProxy} disabled={tvBusy !== "idle"}>
+                  {tvBusy === "start" ? "Starting…" : "Start proxy"}
+                </button>
+                <button on:click={setupTvProxy} disabled={tvBusy !== "idle"} title="Reinstall venv + reinstall mitmproxy">
+                  Reinstall
+                </button>
+              {:else}
+                <button on:click={stopTvProxy} disabled={tvBusy !== "idle"}>
+                  {tvBusy === "stop" ? "Stopping…" : "Stop proxy"}
+                </button>
+              {/if}
+            </div>
+            <ol class="tv-steps">
+              <li>Set your browser HTTP/HTTPS proxy to <code>127.0.0.1:{tvStatus?.port ?? 8080}</code>.</li>
+              <li>
+                Trust the mitmproxy CA cert once
+                {#if tvStatus?.certPath}<code>{tvStatus.certPath}</code>{/if}
+                (browser → Settings → Certificates → Authorities → Import).
+              </li>
+              <li>Open TradingView and place any tiny trade — your TV master account appears here automatically.</li>
+            </ol>
+            <p class="hint">
+              Cascada bundles <a href="https://mitmproxy.org/" target="_blank" rel="noreferrer">mitmproxy</a> + the addon.
+              Needs Python 3.10+ on PATH (auto-detected). Re-running Install is safe.
+            </p>
+          {/if}
         {:else}
           <p class="lead">
             Install <code>CascadaBridge.{mode === "MT4" ? "mq4" : "mq5"}</code>, enable <strong>AutoTrading</strong>, and drag the EA onto any chart — your account appears here automatically. No network setup needed. Multiple {mode} terminals are supported in parallel.
@@ -436,7 +467,7 @@
             <button on:click={installMtEaManual}>Pick location…</button>
           </div>
         {/if}
-        {#if installStatus}
+        {#if installStatus && !pythonMissing}
           <div class="inst-status {installStatus.kind}">{installStatus.text}</div>
         {/if}
       </div>
@@ -642,6 +673,13 @@
   .plat-badge.MT4     { background: #fef3c7; color: #a16207; }
   .plat-badge.MT5     { background: #dcfce7; color: #15803d; }
   .plat-badge.TradingView { background: #eff6ff; color: #1d4ed8; }
+  .plat-badge-row { display: flex; align-items: center; gap: 6px; }
+  .plat-beta {
+    font-size: 9px; font-weight: 700; letter-spacing: 0.06em;
+    padding: 2px 6px; border-radius: 4px;
+    background: linear-gradient(135deg, #f97316, #f59e0b);
+    color: #fff;
+  }
   .plat-name { font-size: 14px; font-weight: 600; color: var(--text); }
   .plat-tag  { font-size: 11px; color: var(--text-muted); }
 
@@ -699,6 +737,32 @@
   .inst-status.info { background: #eff6ff; color: #1e40af; border-color: #bfdbfe; }
   .inst-status.ok   { background: #f0fdf4; color: #166534; border-color: #bbf7d0; }
   .inst-status.err  { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
+
+  .py-required {
+    display: flex; flex-direction: column; gap: 12px;
+    padding: 14px 16px;
+    border: 1px solid #FED7AA;
+    background: linear-gradient(135deg, #FFF7ED, #FEFCE8);
+    border-radius: 8px;
+  }
+  .py-required-head { display: flex; flex-direction: column; gap: 2px; }
+  .py-required-head strong { font-size: 13px; color: #7C2D12; }
+  .py-steps {
+    margin: 0; padding-left: 22px;
+    font-size: 13px; color: var(--text);
+    line-height: 1.7;
+  }
+  .py-steps em { color: #7C2D12; font-style: normal; font-weight: 600; }
+  .btn-link {
+    display: inline-flex; align-items: center;
+    padding: 8px 14px; border-radius: 6px;
+    font-size: 13px; font-weight: 500;
+    text-decoration: none;
+  }
+  .btn-link.primary {
+    background: var(--primary); color: #fff;
+  }
+  .btn-link.primary:hover { filter: brightness(1.06); }
 
   .empty-title { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
   .empty-body { font-size: 13px; color: var(--text-muted); }
