@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { createEventDispatcher, onMount } from "svelte";
-  import { api, defaultRule, type Account, type Platform, type CopyRule, type EaStatus } from "../lib/api";
+  import { createEventDispatcher, onDestroy, onMount } from "svelte";
+  import { api, defaultRule, type Account, type Platform, type CopyRule, type EaStatus, type TvProxyStatus } from "../lib/api";
   import { open as openDialog, ask } from "@tauri-apps/plugin-dialog";
 
   export let accounts: Account[];
@@ -112,26 +112,28 @@
     }
   }
   async function installMtEaAuto() {
-    if (mode === "cTrader") return;
-    installStatus = { kind: "info", text: `Scanning ${mode} terminals…` };
+    if (mode !== "MT4" && mode !== "MT5") return;
+    const target: "MT4" | "MT5" = mode;
+    installStatus = { kind: "info", text: `Scanning ${target} terminals…` };
     try {
-      const paths = await api.installMtEa(mode);
-      installStatus = { kind: "ok", text: `EA installed into ${paths.length} terminal${paths.length > 1 ? "s" : ""}. Refresh the Navigator panel in ${mode}, then drag CascadaBridge onto a chart.` };
+      const paths = await api.installMtEa(target);
+      installStatus = { kind: "ok", text: `EA installed into ${paths.length} terminal${paths.length > 1 ? "s" : ""}. Refresh the Navigator panel in ${target}, then drag CascadaBridge onto a chart.` };
     } catch (e) {
       installStatus = { kind: "err", text: `${e}` };
     }
   }
   async function installMtEaManual() {
-    if (mode === "cTrader") return;
+    if (mode !== "MT4" && mode !== "MT5") return;
+    const target: "MT4" | "MT5" = mode;
     const picked = await openDialog({
       directory: true,
-      title: `Select the ${mode} data folder (contains MQL${mode === "MT4" ? "4" : "5"}/)`,
+      title: `Select the ${target} data folder (contains MQL${target === "MT4" ? "4" : "5"}/)`,
     });
     if (!picked || Array.isArray(picked)) return;
     installStatus = { kind: "info", text: "Installing EA…" };
     try {
-      const p = await api.installMtEaAt(mode, picked);
-      installStatus = { kind: "ok", text: `EA copied → ${p}. Refresh the Navigator panel in ${mode}.` };
+      const p = await api.installMtEaAt(target, picked);
+      installStatus = { kind: "ok", text: `EA copied → ${p}. Refresh the Navigator panel in ${target}.` };
     } catch (e) {
       installStatus = { kind: "err", text: `Failed: ${e}` };
     }
@@ -166,6 +168,66 @@
     } finally { eaUpdateBusy = false; }
   }
   onMount(refreshEaVersions);
+
+  // ───── TradingView sidecar ────────────────────────────────────
+  // Cascada now manages the Python proxy itself: detects Python, builds
+  // a venv at <cascada_root>/tv-proxy/.venv, installs mitmproxy, spawns
+  // mitmdump as a supervised child. Setup + Start are idempotent so the
+  // user can mash either button without breaking anything.
+  let tvStatus: TvProxyStatus | null = null;
+  let tvBusy: "idle" | "setup" | "start" | "stop" = "idle";
+  let tvPollTimer: ReturnType<typeof setInterval> | null = null;
+
+  async function refreshTvStatus() {
+    try { tvStatus = await api.tvProxyStatus(); }
+    catch (e) { console.warn("[tv-proxy] status failed:", e); }
+  }
+  async function setupTvProxy() {
+    if (tvBusy !== "idle") return;
+    tvBusy = "setup";
+    installStatus = { kind: "info", text: "Installing TradingView proxy (Python venv + mitmproxy)…" };
+    try {
+      tvStatus = await api.tvProxySetup();
+      installStatus = { kind: "ok", text: "Proxy installed. Click Start to launch it." };
+    } catch (e) {
+      installStatus = { kind: "err", text: `${e}` };
+    } finally { tvBusy = "idle"; }
+  }
+  async function startTvProxy() {
+    if (tvBusy !== "idle") return;
+    tvBusy = "start";
+    installStatus = { kind: "info", text: "Starting mitmdump…" };
+    try {
+      tvStatus = await api.tvProxyStart();
+      installStatus = { kind: "ok", text: `Proxy listening on 127.0.0.1:${tvStatus.port}. Set your browser HTTP/HTTPS proxy to that and trade on TradingView.` };
+    } catch (e) {
+      installStatus = { kind: "err", text: `${e}` };
+    } finally { tvBusy = "idle"; }
+  }
+  async function stopTvProxy() {
+    if (tvBusy !== "idle") return;
+    tvBusy = "stop";
+    try {
+      tvStatus = await api.tvProxyStop();
+      installStatus = { kind: "info", text: "Proxy stopped." };
+    } catch (e) {
+      installStatus = { kind: "err", text: `${e}` };
+    } finally { tvBusy = "idle"; }
+  }
+  // Re-poll while the TradingView pane is open so the UI reflects async
+  // setup/start completion (the supervisor task exits the child without
+  // calling back into JS). 2 s is fast enough that the running pill
+  // flips visibly within one frame of mitmdump exiting.
+  $: if (showAdd && mode === "TradingView") {
+    if (!tvPollTimer) {
+      refreshTvStatus();
+      tvPollTimer = setInterval(refreshTvStatus, 2000);
+    }
+  } else if (tvPollTimer) {
+    clearInterval(tvPollTimer);
+    tvPollTimer = null;
+  }
+  onDestroy(() => { if (tvPollTimer) clearInterval(tvPollTimer); });
 
   async function promote(a: Account) {
     await api.setRole(a.id, "Master");
@@ -319,24 +381,51 @@
           </div>
         {:else if mode === "TradingView"}
           <p class="lead">
-            TradingView is a browser product, so trades are captured by a small Python sidecar bundled
-            in this repo. One command installs everything (Python venv, mitmproxy, CA cert) and the
-            addon auto-discovers your broker host + account ID from the first trade you place.
+            TradingView is a browser product, so Cascada captures trades through a Python sidecar
+            (mitmproxy + the bundled <code>cascada_addon.py</code>). Cascada manages the whole
+            lifecycle — installation, launch, supervision — no terminal or repo clone needed.
           </p>
+          <div class="tv-status">
+            <span class="tv-pill {tvStatus?.running ? 'on' : tvStatus?.installed ? 'idle' : 'off'}">
+              {tvStatus?.running ? `Running on :${tvStatus.port}` : tvStatus?.installed ? "Installed · stopped" : "Not installed"}
+            </span>
+            {#if tvStatus?.pythonVersion}
+              <span class="muted small">Python {tvStatus.pythonVersion}</span>
+            {/if}
+            {#if tvStatus?.lastError}
+              <span class="tv-err small" title={tvStatus.lastError}>last error: {tvStatus.lastError.length > 60 ? tvStatus.lastError.slice(0, 60) + "…" : tvStatus.lastError}</span>
+            {/if}
+          </div>
+          <div class="install-row">
+            {#if !tvStatus?.installed}
+              <button class="primary" on:click={setupTvProxy} disabled={tvBusy !== "idle"}>
+                {tvBusy === "setup" ? "Installing…" : "Install proxy"}
+              </button>
+            {:else if !tvStatus?.running}
+              <button class="primary" on:click={startTvProxy} disabled={tvBusy !== "idle"}>
+                {tvBusy === "start" ? "Starting…" : "Start proxy"}
+              </button>
+              <button on:click={setupTvProxy} disabled={tvBusy !== "idle"} title="Reinstall venv + reinstall mitmproxy">
+                Reinstall
+              </button>
+            {:else}
+              <button on:click={stopTvProxy} disabled={tvBusy !== "idle"}>
+                {tvBusy === "stop" ? "Stopping…" : "Stop proxy"}
+              </button>
+            {/if}
+          </div>
           <ol class="tv-steps">
+            <li>Set your browser HTTP/HTTPS proxy to <code>127.0.0.1:{tvStatus?.port ?? 8080}</code>.</li>
             <li>
-              From the Cascada repo root, run the bootstrap script:
-              <ul class="tv-platform-cmd">
-                <li><span class="muted small">macOS / Linux:</span> <code>./tv-proxy/setup.sh</code></li>
-                <li><span class="muted small">Windows (PowerShell):</span> <code>.\tv-proxy\setup.ps1</code></li>
-              </ul>
+              Trust the mitmproxy CA cert once
+              {#if tvStatus?.certPath}<code>{tvStatus.certPath}</code>{/if}
+              (browser → Settings → Certificates → Authorities → Import).
             </li>
-            <li>Set your browser HTTP/HTTPS proxy to <code>127.0.0.1:8080</code>.</li>
             <li>Open TradingView and place any tiny trade — your TV master account appears here automatically.</li>
           </ol>
           <p class="hint">
-            Manual install + troubleshooting in <code>tv-proxy/README.md</code>.
-            Uses <a href="https://mitmproxy.org/" target="_blank" rel="noreferrer">mitmproxy</a> under the hood.
+            Cascada bundles <a href="https://mitmproxy.org/" target="_blank" rel="noreferrer">mitmproxy</a> + the addon.
+            Needs Python 3.10+ on PATH (auto-detected). Re-running Install is safe.
           </p>
         {:else}
           <p class="lead">
@@ -573,6 +662,25 @@
   }
   .tv-platform-cmd li { line-height: 1.6; }
   .tv-platform-cmd .muted { display: inline-block; min-width: 145px; }
+
+  .tv-status {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+    font-size: 12px;
+  }
+  .tv-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-weight: 600; font-size: 11px; letter-spacing: 0.02em;
+    padding: 3px 9px; border-radius: 999px;
+    border: 1px solid transparent;
+  }
+  .tv-pill::before {
+    content: ""; width: 7px; height: 7px; border-radius: 50%;
+    background: currentColor;
+  }
+  .tv-pill.on   { background: #f0fdf4; color: #166534; border-color: #bbf7d0; }
+  .tv-pill.idle { background: #fef9c3; color: #92400e; border-color: #fde68a; }
+  .tv-pill.off  { background: #f1f5f9; color: #475569; border-color: #cbd5e1; }
+  .tv-err { color: #b91c1c; }
 
   .instructions {
     padding: 14px 16px;
