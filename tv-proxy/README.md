@@ -12,14 +12,34 @@ Cascada's `tv_bridge::spawn_discovery` polls
 as a Master automatically when the proxy starts writing. No extra Cascada
 configuration required.
 
-## Quick start (one command)
+## In-app setup (recommended)
 
-A bootstrap script handles Python venv + mitmproxy install + CA cert trust +
-launching the sidecar. The addon then auto-discovers your broker host and
-account id from the first TV API call it sees, so there's nothing to look up
-in DevTools.
+The Cascada desktop app manages the sidecar lifecycle for you. The addon is
+embedded in the Cascada binary; nothing in this folder needs to be checked
+out by end users.
 
-From the Cascada repo root:
+1. Open Cascada → **Accounts** → **+ Connect platform** → pick
+   **TradingView**.
+2. Click **Install proxy**. Cascada detects Python on your `PATH`, builds an
+   isolated venv at `<cascada_root>/tv-proxy/.venv/`, installs mitmproxy +
+   requests, extracts the addon, and bootstraps the CA cert.
+3. Click **Start proxy**. Cascada spawns `mitmdump` as a supervised child;
+   stdout / stderr land in the **Logs** panel under the `tv-proxy` source.
+4. Set your browser's HTTP/HTTPS proxy to `127.0.0.1:8080`, trust
+   `~/.mitmproxy/mitmproxy-ca-cert.pem` once, and trade — Cascada
+   auto-attaches the TV account as a Master.
+
+The sidecar stops when you quit Cascada and re-starts on next launch as long
+as a TradingView account exists in your saved state.
+
+Python 3.10+ is required on `PATH` (we don't bundle CPython). On Windows,
+install from [python.org](https://www.python.org/downloads/) with **"Add
+Python to PATH"** ticked; macOS / Linux usually have it already.
+
+## Headless / scripted setup (fallback)
+
+If you can't run the GUI (CI, remote box, scripted deploy), the legacy
+bootstrap scripts still work and do the same thing the in-app flow does:
 
 ```bash
 # macOS / Linux
@@ -28,11 +48,6 @@ From the Cascada repo root:
 # Windows (PowerShell)
 .\tv-proxy\setup.ps1
 ```
-
-Then:
-1. Set your browser HTTP/HTTPS proxy to `127.0.0.1:8080`.
-2. Open TradingView and place any tiny trade.
-3. Cascada auto-attaches the TV account as a Master.
 
 Re-running the script is safe — every step is idempotent. Press `Ctrl-C` to
 stop the sidecar.
