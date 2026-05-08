@@ -473,10 +473,10 @@
               Cascada will open TradingView in {tvStatus?.browserPath?.includes("Edge") ? "Edge" : tvStatus?.browserPath?.includes("Brave") ? "Brave" : "Chrome"} with a sandboxed profile.
               Place any tiny trade once you're in — your master account appears here automatically.
             </p>
-            <p class="hint warn-hint">
-              ⚠ <strong>Login with email + password</strong>, not Google or Apple OAuth — those providers do
-              TLS fingerprinting and refuse to talk to a proxied browser. If your TradingView account
-              is Google-only, set a password first from your normal browser (Profile → Security).
+            <p class="hint">
+              Email/password and Google/Apple OAuth all work — Cascada tunnels Google + Apple
+              auth domains around mitmproxy so Chrome accepts the real provider cert. TradingView
+              traffic itself stays intercepted.
             </p>
           {/if}
         {:else}

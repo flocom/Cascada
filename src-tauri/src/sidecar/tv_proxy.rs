@@ -452,6 +452,21 @@ impl TvProxyManager {
             // user's log panel. The addon emits its own structured logs
             // for the events Cascada cares about.
             .arg("--set").arg("flow_detail=0")
+            // Pass-through (don't MITM) hosts that ship hard-coded cert
+            // pins beyond what `--ignore-certificate-errors-spki-list`
+            // can satisfy. Without this, Google / Apple / Microsoft
+            // login flows fail at the TLS handshake step:
+            //   "Client TLS handshake failed. … the client does not
+            //    trust the proxy's certificate."
+            // mitmproxy still receives the CONNECT and forwards bytes
+            // verbatim, so the user can sign in with Google or Apple
+            // and then land back on TradingView (which IS intercepted
+            // because tradingview.com isn't in the ignore list). Patterns
+            // are anchored on host endings so we don't accidentally
+            // tunnel `<broker>.googleapis-mock.tradingview.com` or
+            // similar bridge hosts.
+            .arg("--ignore-hosts")
+            .arg(r"(google\.com|googleapis\.com|gstatic\.com|googletagmanager\.com|googlesyndication\.com|youtube\.com|ytimg\.com|apple\.com|icloud\.com|microsoft\.com|microsoftonline\.com|windows\.com|live\.com)(:\d+)?$")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
