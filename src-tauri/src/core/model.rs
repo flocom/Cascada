@@ -8,6 +8,14 @@ pub enum Platform {
     CTrader,
     MT4,
     MT5,
+    /// TradingView account (PaperTrading or any TV-integrated broker). The
+    /// `tv-proxy/cascada_addon.py` Python sidecar shipped in this repo
+    /// intercepts the browser's TV broker API and writes events.jsonl in
+    /// the same wire format as the cTrader cBot / MT EA, so the engine
+    /// treats it like any other connector. Cascada watches
+    /// `<cascada_root>/TradingView/<login>/`.
+    #[serde(rename = "TradingView")]
+    TradingView,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -124,16 +132,11 @@ pub struct CopyRule {
     // Risk-percent specifics (used when lot_mode = RiskPercent — needs SL distance).
     #[serde(default = "default_pip_value")] pub pip_value_per_lot: f64,
 
-    // Quote-diff compensation: shift slave SL/TP by (slave_quote − master_quote)
-    // so the pip-distance to SL/TP matches the master. Skip the copy entirely
-    // when |diff| > skip_pips (prevents copying when broker prices have drifted).
-    #[serde(default)] pub quote_compensate: bool,
-    #[serde(default)] pub quote_skip_pips: f64, // 0 = no skip
-    /// Deprecated — kept for backward-compat deserialization only.
-    #[serde(default)] pub quote_compensate_symbols: Vec<String>,
-    /// Manual per-symbol SL/TP offset in pips. Each entry shifts SL/TP for
+    /// Manual per-symbol SL/TP offset in pips. Each entry shifts SL/TP (and
+    /// the entry anchor in `Fixed` mode + the target in pending orders) for
     /// matching trades by `pips * pip_size(symbol)` so the slave's stop sits
-    /// where the user expects despite broker quote drift.
+    /// where the user expects despite broker quote drift. Captured live via
+    /// the Compare tab and pushed straight into the rule.
     #[serde(default)] pub quote_offsets: Vec<QuoteOffset>,
 }
 

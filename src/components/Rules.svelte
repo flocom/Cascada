@@ -53,9 +53,13 @@
   }
   function syncMap() {
     if (!editing) return;
+    // Preserve broker case on both sides — some brokers use suffix tickers
+    // like `XAUUSDb` where the lowercase `b` is significant. The engine
+    // does a case-insensitive fallback when an exact-case map miss happens,
+    // so capitalising here would only get in the way.
     const out: Record<string, string> = {};
     for (const [k, v] of mapPairs) {
-      const kk = k.trim().toUpperCase();
+      const kk = k.trim();
       const vv = v.trim();
       if (kk && vv) out[kk] = vv;
     }
@@ -67,7 +71,7 @@
     syncMap();
   }
   function updateMapping(i: number, side: 0 | 1, value: string) {
-    mapPairs[i][side] = side === 0 ? value.toUpperCase() : value;
+    mapPairs[i][side] = value;
     mapPairs = mapPairs;
     syncMap();
   }
@@ -141,7 +145,6 @@
     if (r.max_lot)             out.push({ kind: "info", text: `max ${r.max_lot} lot` });
     const offN = r.quote_offsets?.length ?? 0;
     if (offN)                  out.push({ kind: "info", text: `offset · ${offN}` });
-    if (r.quote_compensate)    out.push({ kind: "info", text: `drift comp${r.quote_skip_pips ? ` · skip>${r.quote_skip_pips}p` : ""}` });
     if (r.comment_filter)      out.push({ kind: "info", text: `cmt “${r.comment_filter}”` });
     if (r.skip_older_than_secs)out.push({ kind: "info", text: `skip >${r.skip_older_than_secs}s` });
     if (r.max_open_positions) out.push({ kind: "info", text: `≤ ${r.max_open_positions} pos` });

@@ -422,8 +422,9 @@ impl AppState {
     pub async fn connect(self: &Arc<Self>, id: &str) -> Result<()> {
         let account = self.accounts.get(id).map(|a| a.clone())
             .ok_or_else(|| anyhow::anyhow!("unknown account"))?;
-        // MT4/MT5 attach automatically via the file-discovery loop.
-        if matches!(account.platform, Platform::MT4 | Platform::MT5) { return Ok(()); }
+        // MT4/MT5/TradingView attach automatically via the file-discovery loop.
+        if matches!(account.platform,
+            Platform::MT4 | Platform::MT5 | Platform::TradingView) { return Ok(()); }
         if self.connectors.contains_key(id) { return Ok(()); }
         let handle = spawn_connector(account, self.event_tx.clone())?;
         self.connectors.insert(id.to_string(), handle.clone());
@@ -481,6 +482,41 @@ impl AppState {
         crate::connectors::mt_bridge::spawn_discovery(self.clone());
     }
 
+    /// Look up a TradingView account by login (the proxy-chosen identifier,
+    /// typically the TV `account_id`) or create one on the fly. Always
+    /// auto-roled as Master — TV is read-only in v1.
+    pub async fn find_or_create_tv_account(self: &Arc<Self>, login: &str) -> Account {
+        // Single map pass: clone the matching value directly instead of
+        // collecting the id and re-looking it up (which races with removal
+        // and panics on .unwrap()).
+        let existing = self.accounts.iter()
+            .find(|kv| kv.value().platform == Platform::TradingView && kv.value().login == login)
+            .map(|kv| kv.value().clone());
+        if let Some(a) = existing { return a; }
+        let account = Account {
+            id: uuid::Uuid::new_v4().to_string(),
+            platform: Platform::TradingView,
+            label: format!("TradingView {login}"),
+            login: login.to_string(),
+            server: String::new(),
+            role: AccountRole::Master,
+            connected: false,
+            balance: 0.0, equity: 0.0,
+            currency: "USD".into(),
+            password: None,
+        };
+        self.accounts.insert(account.id.clone(), account.clone());
+        self.mark_dirty();
+        if let Some(h) = self.app_handle.get() { let _ = h.emit(EVT_ACCOUNT, &account); }
+        self.emit_log(LogLevel::Info, &account.id,
+            format!("auto-discovered TradingView account {login}"));
+        account
+    }
+
+    pub fn spawn_tv_discovery(self: &Arc<Self>) {
+        crate::connectors::tv_bridge::spawn_discovery(self.clone());
+    }
+
     pub async fn disconnect(&self, id: &str) -> Result<()> {
         if let Some((_, h)) = self.connectors.remove(id) {
             h.shutdown().await;
@@ -518,6 +554,10 @@ impl AppState {
                     if !p.is_dir() { continue; }
                     let Some(login) = p.file_name().and_then(|s| s.to_str()) else { continue };
                     if login.is_empty() { continue; }
+                    // The TradingView sidecar writes its sessions under the
+                    // dedicated subfolder; skip it so we don't try to register
+                    // it as a cTrader login.
+                    if login == crate::connectors::tv_bridge::TV_SUBDIR { continue; }
                     if !tokio::fs::try_exists(p.join("events.jsonl")).await.unwrap_or(false) { continue; }
                     let already = this.accounts.iter().any(|kv| {
                         kv.value().platform == Platform::CTrader && kv.value().login == login
@@ -549,4 +589,3 @@ impl AppState {
         });
     }
 }
-

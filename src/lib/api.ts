@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-export type Platform = "cTrader" | "MT4" | "MT5";
+export type Platform = "cTrader" | "MT4" | "MT5" | "TradingView";
 export type AccountRole = "Master" | "Slave" | "Idle";
 
 export interface Account {
@@ -68,11 +68,7 @@ export interface CopyRule {
   schedule: Schedule;
   pip_value_per_lot: number;
 
-  quote_compensate: boolean;
-  quote_skip_pips: number;
-  /** Deprecated; kept for back-compat deserialization. */
-  quote_compensate_symbols: string[];
-  /** Manual per-symbol SL/TP pip offset entries. */
+  /** Manual per-symbol SL/TP pip offset entries (captured via the Compare tab). */
   quote_offsets: QuoteOffset[];
 }
 
@@ -121,9 +117,6 @@ export function defaultRule(master_id = "", slave_id = ""): CopyRule {
     trailing_pips: 0, breakeven_after_pips: 0,
     schedule: { enabled: false, start_min: 0, end_min: 24 * 60, skip_weekends: false },
     pip_value_per_lot: 10,
-    quote_compensate: false,
-    quote_skip_pips: 0,
-    quote_compensate_symbols: [],
     quote_offsets: [],
   };
 }

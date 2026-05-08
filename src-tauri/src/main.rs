@@ -33,6 +33,7 @@ fn main() {
                 s.reconnect_all();
                 s.spawn_ctrader_discovery();
                 s.spawn_mt_discovery();
+                s.spawn_tv_discovery();
             });
             Ok(())
         })

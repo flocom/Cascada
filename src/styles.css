@@ -127,6 +127,7 @@ tbody tr:last-child td { border-bottom: none; }
 .chip.platform.cTrader { background: #fff7ed; color: #c2410c; }
 .chip.platform.MT4 { background: #eef2ff; color: #4338ca; }
 .chip.platform.MT5 { background: #ecfdf5; color: #047857; }
+.chip.platform.TradingView { background: #eff6ff; color: #1d4ed8; }
 
 .dot { width: 6px; height: 6px; border-radius: 50%; background: #cbd5e1; display: inline-block; }
 .dot.on { background: var(--success); box-shadow: 0 0 0 3px #ecfdf5; }

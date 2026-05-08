@@ -137,7 +137,7 @@
     }
   }
 
-  // ───── EA / cBot version check ─────────────────────────────────────
+  // ───── EA / cBot version check ────────────────────────────────
   // Byte-compare installed EA/cBot binaries against the ones bundled in
   // this build. Shown as a non-blocking banner at the top of Accounts;
   // one click re-runs the installer to refresh stale copies.
@@ -160,7 +160,7 @@
     try {
       for (const p of outdatedPlatforms) {
         if (p === "cTrader")        await api.installCtraderBot().catch(() => {});
-        else                         await api.installMtEa(p).catch(() => {});
+        else if (p === "MT4" || p === "MT5") await api.installMtEa(p).catch(() => {});
       }
       await refreshEaVersions();
     } finally { eaUpdateBusy = false; }
@@ -230,6 +230,7 @@
     { id: "cTrader", name: "cTrader", tag: "cBot · auto-discovered" },
     { id: "MT4",     name: "MetaTrader 4", tag: "EA · auto-discovered" },
     { id: "MT5",     name: "MetaTrader 5", tag: "EA · auto-discovered" },
+    { id: "TradingView", name: "TradingView", tag: "Sidecar · auto-discovered" },
   ];
 
   $: accountMap = new Map(accounts.map((a) => [a.id, a]));
@@ -316,6 +317,21 @@
             <button class="primary" on:click={installCtraderBot}>Auto-install cBot</button>
             <button on:click={installCtraderBotManual}>Pick location…</button>
           </div>
+        {:else if mode === "TradingView"}
+          <p class="lead">
+            TradingView is a browser product, so trades are captured by a small Python sidecar
+            (<code>tv-proxy/cascada_addon.py</code>, bundled in this repo) running as a
+            <a href="https://mitmproxy.org/" target="_blank" rel="noreferrer">mitmproxy</a> addon.
+            Once the sidecar is running, your TV master account appears here automatically.
+          </p>
+          <ol class="tv-steps">
+            <li>Install: <code>pip install mitmproxy requests</code></li>
+            <li>Trust the mitmproxy CA cert (run <code>mitmdump</code> once, then add <code>~/.mitmproxy/mitmproxy-ca-cert.pem</code> to your browser's trust store).</li>
+            <li>Find your TV broker host + account id in DevTools → Network (filter by <code>accounts/</code>).</li>
+            <li>Run: <code>mitmdump -s tv-proxy/cascada_addon.py --set tv_broker_url=&lt;host&gt; --set tv_account_id=&lt;id&gt;</code></li>
+            <li>Set browser HTTP/HTTPS proxy to <code>127.0.0.1:8080</code> and trade on TV.</li>
+          </ol>
+          <p class="hint">Full setup walkthrough in <code>tv-proxy/README.md</code>.</p>
         {:else}
           <p class="lead">
             Install <code>CascadaBridge.{mode === "MT4" ? "mq4" : "mq5"}</code>, enable <strong>AutoTrading</strong>, and drag the EA onto any chart — your account appears here automatically. No network setup needed. Multiple {mode} terminals are supported in parallel.
@@ -511,7 +527,7 @@
     background: linear-gradient(180deg, #fafbfc 0%, #ffffff 100%);
     display: flex; flex-direction: column; gap: 18px;
   }
-  .platforms { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .platforms { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
   .plat-card {
     display: flex; flex-direction: column; gap: 4px;
     padding: 14px 16px;
@@ -530,8 +546,21 @@
   .plat-badge.cTrader { background: #dbeafe; color: #1d4ed8; }
   .plat-badge.MT4     { background: #fef3c7; color: #a16207; }
   .plat-badge.MT5     { background: #dcfce7; color: #15803d; }
+  .plat-badge.TradingView { background: #eff6ff; color: #1d4ed8; }
   .plat-name { font-size: 14px; font-weight: 600; color: var(--text); }
   .plat-tag  { font-size: 11px; color: var(--text-muted); }
+
+  .tv-steps {
+    margin: 0; padding-left: 22px;
+    font-size: 13px; color: var(--text);
+    line-height: 1.7;
+  }
+  .tv-steps li code {
+    background: #fff; padding: 1px 6px; border-radius: 4px;
+    font-size: 12px;
+  }
+  .tv-steps a { color: var(--primary); text-decoration: none; }
+  .tv-steps a:hover { text-decoration: underline; }
 
   .instructions {
     padding: 14px 16px;
