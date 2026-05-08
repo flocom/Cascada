@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "cascada"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "anyhow",
  "chrono",

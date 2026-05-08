@@ -102,6 +102,29 @@ fn bind_to_kill_on_close_job(child: &Child) -> std::io::Result<()> {
 #[inline]
 fn bind_to_kill_on_close_job(_child: &Child) -> std::io::Result<()> { Ok(()) }
 
+/// Best-effort kill of any leftover `mitmdump.exe` (Windows) or
+/// `mitmdump` (Unix) process. Used as a recovery step when the proxy
+/// port is already bound at startup — usually a zombie from a prior
+/// Cascada session that survived a brutal app exit (pre-0.5.8, before
+/// the Job Object lifecycle binding). Errors are intentionally
+/// swallowed: this is a fallback, not a guarantee.
+async fn kill_leftover_mitmdump() {
+    #[cfg(windows)]
+    let mut killer = {
+        let mut c = cmd("taskkill");
+        c.args(["/F", "/IM", "mitmdump.exe"]);
+        c
+    };
+    #[cfg(unix)]
+    let mut killer = {
+        let mut c = cmd("pkill");
+        c.args(["-f", "mitmdump"]);
+        c
+    };
+    killer.stdout(Stdio::null()).stderr(Stdio::null());
+    let _ = killer.status().await;
+}
+
 /// Tokio Command builder with `CREATE_NO_WINDOW` set on Windows. Without
 /// this flag every spawn of `python.exe` / `mitmdump.exe` opens a stray
 /// console window that confuses non-technical users (a black box pops up
@@ -389,11 +412,24 @@ impl TvProxyManager {
         // (Windows in particular doesn't always honor it on rough exits).
         // Surfacing a clear message here is far better than letting the
         // browser hit ERR_PROXY_CONNECTION_FAILED with no explanation.
+        // First we try to auto-recover: a leftover mitmdump.exe from
+        // a prior Cascada session is the overwhelmingly common cause,
+        // and `taskkill` on the exact venv binary is safe to attempt.
         if tokio::net::TcpStream::connect(("127.0.0.1", self.port)).await.is_ok() {
-            return Err(anyhow!(
-                "Port {} is already in use — likely a leftover mitmdump.exe from a \
-                 previous Cascada session. Kill it via Task Manager (or restart \
-                 your computer) and try again.", self.port));
+            self.log(LogLevel::Warn, format!(
+                "tv-proxy: port {} already in use — attempting to kill leftover mitmdump.exe",
+                self.port));
+            kill_leftover_mitmdump().await;
+            // Give the OS a beat to release the socket — without this
+            // the next bind() races and re-fires the in-use check.
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            if tokio::net::TcpStream::connect(("127.0.0.1", self.port)).await.is_ok() {
+                return Err(anyhow!(
+                    "Port {} is still in use after attempting cleanup. \
+                     Restart your computer or check Task Manager for a process \
+                     bound to this port.", self.port));
+            }
+            self.log(LogLevel::Info, "tv-proxy: leftover process cleared, continuing");
         }
 
         self.log(LogLevel::Info, format!(
