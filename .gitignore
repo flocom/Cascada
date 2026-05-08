@@ -5,3 +5,4 @@ src-tauri/gen
 .DS_Store
 *.log
 .claude/
+.cascada-updater.key
