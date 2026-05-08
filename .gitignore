@@ -11,3 +11,4 @@ src-tauri/gen
 # resolve `bundle.resources/python` in dev builds.
 src-tauri/resources/python/*
 !src-tauri/resources/python/.gitkeep
+__pycache__/
