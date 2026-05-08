@@ -390,17 +390,22 @@ fn in_window(s: &Schedule) -> bool {
 
 fn override_sl_tp(rule: &CopyRule, t: &Trade, side: Side, quote_offset: f64) -> (Option<f64>, Option<f64>) {
     let pip = effective_pip_size(t);
-    // Copy mode shifts master's absolute SL/TP into slave's price space so the
-    // pip-distance is preserved. Fixed mode is already relative to slave entry.
+    // Anchor Fixed mode on the master's fill price shifted by `quote_offset`
+    // so the slave's stop lands on the slave broker's price space. Without
+    // the shift, masters with alternative price feeds (e.g. TradingView
+    // PaperTrading vs an MT5 broker) place SL/TP 1-3 pips off where the user
+    // intended. Copy mode already adds `quote_offset` to the master's
+    // absolute level for the same reason.
+    let entry = t.price + quote_offset;
     let sl = match rule.sl_mode {
         SlTpMode::Copy   => t.sl.map(|v| v + quote_offset),
         SlTpMode::Ignore => None,
-        SlTpMode::Fixed  => fixed_sl(t.price, side, rule.sl_pips, pip),
+        SlTpMode::Fixed  => fixed_sl(entry, side, rule.sl_pips, pip),
     };
     let tp = match rule.tp_mode {
         SlTpMode::Copy   => t.tp.map(|v| v + quote_offset),
         SlTpMode::Ignore => None,
-        SlTpMode::Fixed  => fixed_tp(t.price, side, rule.tp_pips, pip),
+        SlTpMode::Fixed  => fixed_tp(entry, side, rule.tp_pips, pip),
     };
     (sl, tp)
 }

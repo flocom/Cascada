@@ -29,6 +29,7 @@ fn mt_assets(platform: Platform) -> Result<MtAssets, String> {
             bin_name: "CascadaBridge.ex5", bin_body: MT5_EA_BIN,
         }),
         Platform::CTrader => Err("cTrader uses install_ctrader_bot".into()),
+        Platform::TradingView => Err("TradingView uses the cascada-tv-proxy sidecar, no EA install".into()),
     }
 }
 
