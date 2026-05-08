@@ -85,6 +85,21 @@ export interface EaStatus {
   bundled_bytes: number;
 }
 
+/// Status of the Cascada-managed TradingView sidecar (Python + mitmproxy).
+/// Returned by the `tv_proxy_*` commands; powers the Accounts › TradingView
+/// panel.
+export interface TvProxyStatus {
+  installed: boolean;        // venv + mitmproxy ready
+  running: boolean;          // mitmdump child alive
+  port: number;
+  pythonPath?: string | null;
+  pythonVersion?: string | null;
+  addonPath?: string | null;
+  venvPath?: string | null;
+  certPath?: string | null;  // ~/.mitmproxy/mitmproxy-ca-cert.pem
+  lastError?: string | null;
+}
+
 export interface Quote {
   account_id: string;
   symbol: string;
@@ -187,6 +202,12 @@ export const api = {
 
   /** Compare installed EAs / cBots with the ones bundled in this build. */
   checkEaVersions: () => invoke<EaStatus[]>("check_ea_versions"),
+
+  /** TradingView sidecar lifecycle. `setup` is idempotent — safe to re-run. */
+  tvProxyStatus: () => invoke<TvProxyStatus>("tv_proxy_status"),
+  tvProxySetup: () => invoke<TvProxyStatus>("tv_proxy_setup"),
+  tvProxyStart: () => invoke<TvProxyStatus>("tv_proxy_start"),
+  tvProxyStop: () => invoke<TvProxyStatus>("tv_proxy_stop"),
 
   exportSettings: (path: string) => invoke<string>("export_settings", { path }),
   importSettings: (path: string) =>
