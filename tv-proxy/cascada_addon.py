@@ -6,7 +6,12 @@ Bridges a TradingView browser session to Cascada's local file-bridge protocol
 treats the TV PaperTrading / TV-broker account as a master and fans trades
 out to MT4/MT5/cTrader slaves through its existing copy engine.
 
-Run with:
+Zero-config run — just point a proxied browser at this:
+
+    mitmdump -s tv-proxy/cascada_addon.py
+
+The addon sniffs the first TV broker API request and auto-configures itself.
+Manual override (skip auto-discovery, or pin a specific account) still works:
 
     mitmdump -s tv-proxy/cascada_addon.py \
         --set tv_broker_url=paper-trading.tradingview.com \
@@ -45,6 +50,7 @@ from __future__ import annotations
 
 import json
 import platform
+import re
 import sys
 import threading
 import time
@@ -59,7 +65,7 @@ except ImportError:  # pragma: no cover — let `python cascada_addon.py --help`
     http = None  # type: ignore
 
 
-# ─────────────────────────── Cascada root resolution ─────────────────────
+# ───────────────────────── Cascada root resolution ─────────────────
 
 def cascada_root_default() -> Path:
     """Mirror `connectors/file_bridge::cascada_root` from the Rust core.
@@ -83,7 +89,7 @@ def cascada_root_default() -> Path:
     return home / "Documents" / "cAlgo" / "Cascada"
 
 
-# ────────────────────────────── Wire helpers ─────────────────────────────
+# ──────────────────────────── Wire helpers ──────────────────────────
 
 def now_ms() -> int:
     return int(time.time() * 1000)
@@ -94,6 +100,18 @@ def to_side(s: str) -> str:
     capitalised 'Buy'/'Sell'."""
     s = (s or "").strip().lower()
     return "Sell" if s == "sell" else "Buy"
+
+
+# ────────────────────────────── Auto-discovery pattern ──────────────────────
+
+# Match any `https://<host>/accounts/<id>/{state|positions|orders|...}` URL
+# coming from a TV-originated request. The endpoint suffixes here are the
+# stable subset every TV broker integration exposes, so a single hit on the
+# first request lets us snap broker_url + account_id without a manual flag.
+_DISCOVER_RE = re.compile(
+    r'^https?://([^/]+)/accounts/([^/?]+)/'
+    r'(?:state|positions|orders|executions|instruments|history|preferences|configuration)\b'
+)
 
 
 # ────────────────────────────── State tracking ─────────────────────────────
@@ -121,6 +139,7 @@ class PositionMeta:
 class TVBridge:
     broker_url: str = ""
     account_id: str = ""
+    cascada_root_override: str = ""
     out_dir: Path = field(default_factory=cascada_root_default)
     pip_sizes: dict[str, float] = field(default_factory=dict)
     pending_opens: dict[str, PositionMeta] = field(default_factory=dict)
@@ -132,7 +151,7 @@ class TVBridge:
     last_currency: str = "USD"
     write_lock: threading.Lock = field(default_factory=threading.Lock)
 
-    # ─── Lifecycle ─────────────────────────────────────────────────
+    # ─── Lifecycle ──────────────────────────────────────────────────
 
     def configure(self, broker_url: str, account_id: str, out_root: str = "") -> None:
         self.broker_url = broker_url.rstrip("/")
@@ -152,8 +171,16 @@ class TVBridge:
         return f"{self.broker_url}/accounts/{self.account_id}"
 
     def request(self, flow: "http.HTTPFlow") -> None:  # type: ignore[name-defined]
-        # Capture the auth token from any request — TV refreshes them
-        # periodically; we want the freshest one for `/instruments` polls.
+        # Auto-discovery: snap broker_url + account_id from the first TV
+        # broker API request the proxy sees. We only sniff if neither was
+        # set on the command line, so manual `--set tv_broker_url=...` keeps
+        # full precedence (e.g. when juggling two TV accounts).
+        if not (self.broker_url and self.account_id):
+            self._try_auto_discover(flow)
+
+        # Capture the auth token from any request to the configured broker —
+        # TV refreshes them periodically; we want the freshest one for
+        # `/instruments` and `/state` polls.
         if self.broker_url and self.broker_url in flow.request.pretty_url:
             tok = flow.request.headers.get("authorization")
             if tok:
@@ -198,7 +225,26 @@ class TVBridge:
             pid = url.rsplit("/", 1)[-1].split("?")[0]
             self._on_modify(pid, dict(flow.request.urlencoded_form or {}), data)
 
-    # ─── Event handlers ─────────────────────────────────────────────
+    # ─── Auto-discovery ───────────────────────────────────────────────
+
+    def _try_auto_discover(self, flow: "http.HTTPFlow") -> None:  # type: ignore[name-defined]
+        m = _DISCOVER_RE.match(flow.request.pretty_url)
+        if not m:
+            return
+        host, account_id = m.group(1), m.group(2)
+        # Cheap sanity filter: TV originates the request, so its referer or
+        # origin header points at tradingview.com (or *.tradingview.com).
+        # Skip anything without that signal so we don't latch onto random
+        # /accounts/.../state endpoints from unrelated APIs the proxy might
+        # see (corp tools, dev environments, etc.).
+        ref = (flow.request.headers.get("referer", "")
+               + "|" + flow.request.headers.get("origin", ""))
+        if "tradingview.com" not in ref:
+            return
+        self._log(f"auto-discovered TV broker={host} account={account_id}")
+        self.configure(host, account_id, self.cascada_root_override)
+
+    # ─── Event handlers ──────────────────────────────────────────────
 
     def _on_order(self, req: dict[str, Any], resp: dict[str, Any]) -> None:
         d = (resp or {}).get("d") or {}
@@ -280,7 +326,7 @@ class TVBridge:
             meta.tp = 0.0
         self._emit({"ev": "modify", "ticket": pid, "sl": meta.sl, "tp": meta.tp})
 
-    # ─── Emitters (Cascada wire format) ──────────────────────────────────
+    # ─── Emitters (Cascada wire format) ─────────────────────────────────────
 
     def _emit_open(self, ticket: str, meta: PositionMeta) -> None:
         if not self.welcomed:
@@ -377,7 +423,7 @@ class TVBridge:
         except Exception:
             pass
 
-    # ─── Internals ───────────────────────────────────────────────────
+    # ─── Internals ──────────────────────────────────────────────────────
 
     def _is_relevant(self, flow: "http.HTTPFlow") -> bool:  # type: ignore[name-defined]
         if not (self.broker_url and self.account_id):
@@ -418,13 +464,13 @@ def load(loader) -> None:  # mitmproxy: register options
         name="tv_broker_url",
         typespec=str,
         default="",
-        help="TradingView broker host (e.g. 'paper-trading.tradingview.com')",
+        help="TradingView broker host (default: auto-discovered from first request)",
     )
     loader.add_option(
         name="tv_account_id",
         typespec=str,
         default="",
-        help="TradingView account id (e.g. 'PA-1234567')",
+        help="TradingView account id (default: auto-discovered from first request)",
     )
     loader.add_option(
         name="cascada_root",
@@ -436,27 +482,30 @@ def load(loader) -> None:  # mitmproxy: register options
 
 def configure(updates) -> None:  # mitmproxy: options changed
     if {"tv_broker_url", "tv_account_id", "cascada_root"} & set(updates):
+        # Stash the cascada_root override so auto-discovery later picks it up.
+        bridge.cascada_root_override = ctx.options.cascada_root
         broker = ctx.options.tv_broker_url
         acc = ctx.options.tv_account_id
         if broker and acc:
             bridge.configure(broker, acc, ctx.options.cascada_root)
+        else:
+            bridge._log("waiting for first TradingView request to auto-discover broker + account…")
 
 
 def running() -> None:  # mitmproxy: addon started
-    if not (bridge.broker_url and bridge.account_id):
-        return
-    # Background sync loop: refresh /state for heartbeats every 5s, and
-    # /instruments every 5min (rarely changes; pulled mostly to pick up new
-    # tickers added to the user's TV watchlist mid-session).
+    # Always start the heartbeat loop — it idles until configure() (manual
+    # or auto-discovered) populates broker_url + account_id, then begins
+    # polling /state every 5s and refreshing /instruments every 5min.
     def _loop():
         last_inst = 0.0
         while True:
             try:
-                bridge.fetch_state()
-                bridge.emit_heartbeat()
-                if time.time() - last_inst > 300:
-                    bridge.fetch_instruments()
-                    last_inst = time.time()
+                if bridge.broker_url and bridge.account_id:
+                    bridge.fetch_state()
+                    bridge.emit_heartbeat()
+                    if time.time() - last_inst > 300:
+                        bridge.fetch_instruments()
+                        last_inst = time.time()
             except Exception:
                 pass
             time.sleep(5)
