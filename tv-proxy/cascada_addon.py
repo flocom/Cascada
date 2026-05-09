@@ -629,38 +629,38 @@ class TVBridge:
         target = _safe_float(p.get("price"))
         pip_size = self.pip_sizes.get(symbol, 0.0)
 
-        # Child SL/TP order — TV emits one of these whenever the user
-        # sets a stop or take-profit. The `parent` field points back
-        # at the parent order; we route to position-modify if the
-        # parent owns an open position, otherwise treat it as a
-        # pending-modify (the user moved SL/TP on a pending order).
+        # Child SL/TP order. TV emits one whenever the user sets, moves
+        # or REMOVES a stop / take-profit on an open position. Removal
+        # arrives as a child `order_update` with status=cancelled (or
+        # close-date set) — the price field still carries the OLD level,
+        # so we must read the cancellation signal explicitly to know the
+        # level is gone. Without this, removing a TP would silently
+        # leave the slave's TP intact.
         if label in ("sl", "tp"):
             parent_id = str(p.get("parent") or "")
             ticket = self._ticket_for_order_id(parent_id)
-            if ticket:
-                meta = self.positions.get(ticket)
-                if not meta:
-                    return
-                price = _safe_float(p.get("price"))
-                # Dedup: TV broadcasts both this child and a
-                # `position_update` on every modify, which would
-                # otherwise double-emit. Compare against meta.
-                changed = False
-                if label == "sl" and price and price != meta.sl:
-                    meta.sl = price; changed = True
-                elif label == "tp" and price and price != meta.tp:
-                    meta.tp = price; changed = True
-                if not changed:
-                    return
-                self._emit({"ev": "modify", "ticket": ticket,
-                            "sl": meta.sl, "tp": meta.tp, "ts": now_ms()})
-                self._log(f"modify {symbol} ticket={ticket} "
-                          f"sl={meta.sl} tp={meta.tp} (ws)")
+            if not ticket:
+                # Parent is a pending we're tracking — TV will also
+                # re-broadcast the parent with the new sl/tp, which
+                # our pending branch below picks up.
                 return
-            # The parent might be a pending we're tracking. TV will
-            # also re-broadcast the parent order with the new sl/tp
-            # which our pending branch below picks up — so we just
-            # let this child frame fall on the floor.
+            meta = self.positions.get(ticket)
+            if not meta:
+                return
+            cancelled = (any(k in status for k in ("cancel", "reject", "expir"))
+                         or close_date is not None)
+            new_val = 0.0 if cancelled else _safe_float(p.get("price"))
+            changed = False
+            if label == "sl" and new_val != meta.sl:
+                meta.sl = new_val; changed = True
+            elif label == "tp" and new_val != meta.tp:
+                meta.tp = new_val; changed = True
+            if not changed:
+                return
+            self._emit({"ev": "modify", "ticket": ticket,
+                        "sl": meta.sl, "tp": meta.tp, "ts": now_ms()})
+            self._log(f"modify {symbol} ticket={ticket} "
+                      f"sl={meta.sl} tp={meta.tp} (ws)")
             return
 
         # Pending order lifecycle. TV reports `status="pending"` for

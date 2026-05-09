@@ -1,16 +1,15 @@
 <script lang="ts">
-  import { createEventDispatcher, onDestroy, onMount } from "svelte";
-  import { api, defaultRule, type Account, type Platform, type CopyRule, type EaStatus, type TvProxyStatus } from "../lib/api";
-  import { open as openDialog, ask } from "@tauri-apps/plugin-dialog";
+  import { createEventDispatcher } from "svelte";
+  import { api, defaultRule, type Account, type CopyRule } from "../lib/api";
+  import { ask } from "@tauri-apps/plugin-dialog";
+  import EaUpdateBanner from "./EaUpdateBanner.svelte";
+  import AddAccountWizard from "./AddAccountWizard.svelte";
 
   export let accounts: Account[];
   export let rules: CopyRule[] = [];
   const dispatch = createEventDispatcher();
 
   let showAdd = false;
-  let mode: Platform = "cTrader";
-  let installStatus: { kind: "info" | "ok" | "err"; text: string } | null = null;
-
   let editingId: string | null = null;
   let editingLabel = "";
 
@@ -91,159 +90,20 @@
     return colorByMaster.get(masterId) ?? PALETTE[0];
   }
 
-  async function installCtraderBot() {
-    installStatus = { kind: "info", text: "Scanning cTrader installs…" };
-    try {
-      const paths = await api.installCtraderBot();
-      installStatus = { kind: "ok", text: `Installed into ${paths.length} install${paths.length > 1 ? "s" : ""}. Confirm the cTrader import dialog, attach the cBot to a chart and press Start — your account will appear here automatically.` };
-    } catch (e) {
-      installStatus = { kind: "err", text: `${e} — try "Pick location" instead.` };
-    }
-  }
-  async function installCtraderBotManual() {
-    const picked = await openDialog({ directory: true, title: "Select your cAlgo folder" });
-    if (!picked || Array.isArray(picked)) return;
-    installStatus = { kind: "info", text: "Installing…" };
-    try {
-      const p = await api.installCtraderBotAt(picked);
-      installStatus = { kind: "ok", text: `Installed → ${p}. Attach the cBot to a chart and press Start.` };
-    } catch (e) {
-      installStatus = { kind: "err", text: `Failed: ${e}` };
-    }
-  }
-  async function installMtEaAuto() {
-    if (mode !== "MT4" && mode !== "MT5") return;
-    const target: "MT4" | "MT5" = mode;
-    installStatus = { kind: "info", text: `Scanning ${target} terminals…` };
-    try {
-      const paths = await api.installMtEa(target);
-      installStatus = { kind: "ok", text: `EA installed into ${paths.length} terminal${paths.length > 1 ? "s" : ""}. Refresh the Navigator panel in ${target}, then drag CascadaBridge onto a chart.` };
-    } catch (e) {
-      installStatus = { kind: "err", text: `${e}` };
-    }
-  }
-  async function installMtEaManual() {
-    if (mode !== "MT4" && mode !== "MT5") return;
-    const target: "MT4" | "MT5" = mode;
-    const picked = await openDialog({
-      directory: true,
-      title: `Select the ${target} data folder (contains MQL${target === "MT4" ? "4" : "5"}/)`,
-    });
-    if (!picked || Array.isArray(picked)) return;
-    installStatus = { kind: "info", text: "Installing EA…" };
-    try {
-      const p = await api.installMtEaAt(target, picked);
-      installStatus = { kind: "ok", text: `EA copied → ${p}. Refresh the Navigator panel in ${target}.` };
-    } catch (e) {
-      installStatus = { kind: "err", text: `Failed: ${e}` };
-    }
-  }
-
-  // ───── EA / cBot version check ────────────────────────────────
-  // Byte-compare installed EA/cBot binaries against the ones bundled in
-  // this build. Shown as a non-blocking banner at the top of Accounts;
-  // one click re-runs the installer to refresh stale copies.
-  let eaStatuses: EaStatus[] = [];
-  let eaCheckBusy = false;
-  let eaUpdateBusy = false;
-  $: outdatedEas = eaStatuses.filter((s) => !s.up_to_date);
-  $: outdatedPlatforms = Array.from(new Set(outdatedEas.map((s) => s.platform))) as Platform[];
-
-  async function refreshEaVersions() {
-    if (eaCheckBusy) return;
-    eaCheckBusy = true;
-    try { eaStatuses = await api.checkEaVersions(); }
-    catch (e) { console.warn("[ea-version] check failed:", e); }
-    finally { eaCheckBusy = false; }
-  }
-  async function updateAllOutdated() {
-    if (eaUpdateBusy) return;
-    eaUpdateBusy = true;
-    try {
-      for (const p of outdatedPlatforms) {
-        if (p === "cTrader")        await api.installCtraderBot().catch(() => {});
-        else if (p === "MT4" || p === "MT5") await api.installMtEa(p).catch(() => {});
-      }
-      await refreshEaVersions();
-    } finally { eaUpdateBusy = false; }
-  }
-  onMount(refreshEaVersions);
-
-  // ───── TradingView sidecar ────────────────────────────────────
-  // Cascada now manages the Python proxy itself: detects Python, builds
-  // a venv at <cascada_root>/tv-proxy/.venv, installs mitmproxy, spawns
-  // mitmdump as a supervised child. Setup + Start are idempotent so the
-  // user can mash either button without breaking anything.
-  let tvStatus: TvProxyStatus | null = null;
-  let tvBusy: "idle" | "setup" | "start" | "stop" | "open" = "idle";
-  let tvPollTimer: ReturnType<typeof setInterval> | null = null;
-
-  async function refreshTvStatus() {
-    try { tvStatus = await api.tvProxyStatus(); }
-    catch (e) { console.warn("[tv-proxy] status failed:", e); }
-  }
-  async function setupTvProxy() {
-    if (tvBusy !== "idle") return;
-    tvBusy = "setup";
-    installStatus = { kind: "info", text: "Install in progress" };
-    try {
-      tvStatus = await api.tvProxySetup();
-      installStatus = { kind: "ok", text: "Proxy installed. Click Open TradingView to start trading." };
-    } catch (e) {
-      installStatus = { kind: "err", text: `${e}` };
-    } finally { tvBusy = "idle"; }
-  }
-  async function openTvBrowser() {
-    if (tvBusy !== "idle") return;
-    tvBusy = "open";
-    installStatus = { kind: "info", text: "Launching TradingView in an isolated browser window…" };
-    try {
-      tvStatus = await api.tvProxyOpenBrowser();
-      installStatus = { kind: "ok", text: "TradingView is open. Place any tiny trade — your master account appears here automatically." };
-    } catch (e) {
-      installStatus = { kind: "err", text: `${e}` };
-    } finally { tvBusy = "idle"; }
-  }
-  async function stopTvProxy() {
-    if (tvBusy !== "idle") return;
-    tvBusy = "stop";
-    try {
-      tvStatus = await api.tvProxyStop();
-      installStatus = { kind: "info", text: "Proxy stopped." };
-    } catch (e) {
-      installStatus = { kind: "err", text: `${e}` };
-    } finally { tvBusy = "idle"; }
-  }
-  // Re-poll while the TradingView pane is open so the UI reflects async
-  // setup/start completion (the supervisor task exits the child without
-  // calling back into JS). 2 s is fast enough that the running pill
-  // flips visibly within one frame of mitmdump exiting.
-  $: if (showAdd && mode === "TradingView") {
-    if (!tvPollTimer) {
-      refreshTvStatus();
-      tvPollTimer = setInterval(refreshTvStatus, 2000);
-    }
-  } else if (tvPollTimer) {
-    clearInterval(tvPollTimer);
-    tvPollTimer = null;
-  }
-  onDestroy(() => { if (tvPollTimer) clearInterval(tvPollTimer); });
-
   async function promote(a: Account) {
     await api.setRole(a.id, "Master");
     dispatch("refresh");
   }
   async function demoteToIdle(a: Account) {
     // Keep existing rules — they'll be flagged with a warning in the Rules tab
-    // until the user reassigns or deletes them. Silent deletion here was making
-    // rules vanish unexpectedly.
+    // until the user reassigns or deletes them.
     await api.setRole(a.id, "Idle");
     dispatch("refresh");
   }
 
   async function linkSlave(master: Account, slave: Account) {
     // Reuse any existing rule for this (master, slave) pair so re-linking after
-    // a demote doesn't create a duplicate. Otherwise create a fresh draft.
+    // a demote doesn't create a duplicate.
     const existing = rules.find((r) => r.master_id === master.id && r.slave_id === slave.id);
     await api.upsertRule(existing ?? defaultRule(master.id, slave.id));
     if (slave.role !== "Slave") await api.setRole(slave.id, "Slave");
@@ -288,28 +148,10 @@
     dispatch("refresh");
   }
 
-  const platforms: { id: Platform; name: string; tag: string }[] = [
-    { id: "cTrader", name: "cTrader", tag: "cBot · auto-discovered" },
-    { id: "MT4",     name: "MetaTrader 4", tag: "EA · auto-discovered" },
-    { id: "MT5",     name: "MetaTrader 5", tag: "EA · auto-discovered" },
-    { id: "TradingView", name: "TradingView", tag: "Sidecar · auto-discovered" },
-  ];
-
-  // Surface the "Python 3.10+ not found on PATH" failure as its own panel
-  // (with a python.org link) instead of a wall of red error text. The
-  // string match is brittle on purpose — the only place we generate it is
-  // detect_python() in src-tauri/src/sidecar/tv_proxy.rs.
-  $: pythonMissing = mode === "TradingView"
-    && installStatus?.kind === "err"
-    && /python.*not found on path/i.test(installStatus.text);
-
   $: accountMap = new Map(accounts.map((a) => [a.id, a]));
   $: masters = accounts.filter((a) => a.role === "Master");
-  // Only surface a slave under its master in the Accounts UI when its role is
-  // still "Slave" — a demoted account stays in the unassigned column even if
-  // its rule is preserved (the rule shows up with a warning in the Rules tab).
-  // Single O(rules) pass instead of O(masters × rules); also builds the
-  // `linkedByMaster` index reused by `candidatesFor` (no more nested `rules.some`).
+  // Single O(rules) pass that builds both `byMaster` (slave list per master)
+  // and `linked` (master→Set<slave_id> for `candidatesFor` lookups).
   $: derived = (() => {
     const byMaster = new Map<string, { rule: CopyRule; slave: Account }[]>();
     const linked = new Map<string, Set<string>>();
@@ -335,7 +177,6 @@
   $: unassigned = accounts.filter(
     (a) => a.role === "Idle" || (a.role === "Slave" && !derived.slavesWithActiveMaster.has(a.id)),
   );
-  // Candidates for "Link slave" = anyone not yet linked to THIS master and not the master itself.
   function candidatesFor(masterId: string): Account[] {
     const linkSet = derived.linked.get(masterId);
     return accounts.filter(
@@ -347,142 +188,15 @@
 <div class="card">
   <div class="card-header">
     <h2>Accounts</h2>
-    <button class="primary" on:click={() => { showAdd = !showAdd; installStatus = null; }}>
+    <button class="primary" on:click={() => { showAdd = !showAdd; }}>
       {showAdd ? "Close" : "+ Connect platform"}
     </button>
   </div>
 
-  {#if outdatedEas.length > 0}
-    <div class="ea-update-banner" role="status">
-      <span class="ea-dot"></span>
-      <div class="ea-msg">
-        <strong>{outdatedEas.length} EA{outdatedEas.length > 1 ? "s" : ""} out of date.</strong>
-        <span class="muted small">
-          {outdatedPlatforms.join(" · ")} — Cascada ships a newer build. Installed files will be overwritten.
-        </span>
-      </div>
-      <button class="primary sm" on:click={updateAllOutdated} disabled={eaUpdateBusy}>
-        {eaUpdateBusy ? "Updating…" : "Update now"}
-      </button>
-    </div>
-  {/if}
+  <EaUpdateBanner />
 
   {#if showAdd}
-    <div class="wizard">
-      <div class="platforms">
-        {#each platforms as p}
-          <button class="plat-card" class:active={mode === p.id}
-                  on:click={() => { mode = p.id; installStatus = null; }}>
-            <div class="plat-badge-row">
-              <span class="plat-badge {p.id}">{p.id}</span>
-            </div>
-            <span class="plat-name">{p.name}</span>
-            <span class="plat-tag">{p.tag}</span>
-          </button>
-        {/each}
-      </div>
-
-      <div class="instructions">
-        {#if mode === "cTrader"}
-          <p class="lead">Install the <code>CascadaBridge</code> cBot, attach it to any chart, press <strong>Start</strong>. Your account appears here automatically — no login or label needed.</p>
-          <div class="install-row">
-            <button class="primary" on:click={installCtraderBot}>Auto-install cBot</button>
-            <button on:click={installCtraderBotManual}>Pick location…</button>
-          </div>
-        {:else if mode === "TradingView"}
-          <div class="tv-warning">
-            <strong>Under active development</strong> — use with caution.
-          </div>
-          <div class="tv-status">
-            <span class="tv-pill {tvStatus?.running ? 'on' : tvStatus?.installed ? 'idle' : 'off'}">
-              {tvStatus?.running ? `Running on :${tvStatus.port}` : tvStatus?.installed ? "Installed · stopped" : "Not installed"}
-            </span>
-            {#if tvStatus?.pythonVersion}
-              <span class="muted small">Python {tvStatus.pythonVersion}</span>
-            {/if}
-            {#if tvStatus?.lastError}
-              <span class="tv-err small" title={tvStatus.lastError}>last error: {tvStatus.lastError.length > 60 ? tvStatus.lastError.slice(0, 60) + "…" : tvStatus.lastError}</span>
-            {/if}
-          </div>
-          {#if pythonMissing}
-            <div class="py-required">
-              <div class="py-required-head">
-                <strong>Python 3.10+ is required</strong>
-                <span class="muted small">Cascada uses Python to run the mitmproxy sidecar that talks to TradingView.</span>
-              </div>
-              <ol class="py-steps">
-                <li>Download &amp; install Python 3.10 or newer.</li>
-                <li><strong>Windows users:</strong> in the installer, tick <em>“Add Python to PATH”</em> on the first screen — that's the most common reason setup fails.</li>
-                <li>Come back here and click <em>Retry install</em>.</li>
-              </ol>
-              <div class="install-row">
-                <a class="btn-link primary" href="https://www.python.org/downloads/" target="_blank" rel="noreferrer">Download Python →</a>
-                <button on:click={setupTvProxy} disabled={tvBusy !== "idle"}>
-                  {tvBusy === "setup" ? "Retrying…" : "Retry install"}
-                </button>
-              </div>
-            </div>
-          {:else if tvStatus && !tvStatus.installed}
-            <div class="install-row">
-              <button class="primary" on:click={setupTvProxy} disabled={tvBusy !== "idle"}>
-                {#if tvBusy === "setup"}<span class="spinner" aria-hidden="true"></span>Installing…{:else}Install proxy{/if}
-              </button>
-            </div>
-            {#if tvBusy === "setup"}
-              <div class="setup-progress">
-                <div class="setup-progress-bar"><div class="setup-progress-fill"></div></div>
-              </div>
-            {/if}
-          {:else if tvStatus && !tvStatus.browserPath}
-            <div class="browser-required">
-              <div class="py-required-head">
-                <strong>Chrome, Edge, or Brave required</strong>
-                <span class="muted small">Cascada launches TradingView in an isolated window — pick any Chromium-based browser.</span>
-              </div>
-              <div class="install-row">
-                <a class="btn-link primary" href="https://www.google.com/chrome/" target="_blank" rel="noreferrer">Download Chrome →</a>
-                <a class="btn-link" href="https://www.microsoft.com/edge" target="_blank" rel="noreferrer">Download Edge</a>
-                <button on:click={refreshTvStatus} disabled={tvBusy !== "idle"}>I've installed it</button>
-              </div>
-            </div>
-          {:else}
-            <div class="install-row">
-              <button class="primary" on:click={openTvBrowser} disabled={tvBusy !== "idle" || !tvStatus?.browserReady}>
-                {#if tvBusy === "open"}<span class="spinner" aria-hidden="true"></span>Opening…{:else}Open TradingView →{/if}
-              </button>
-              {#if tvStatus?.running}
-                <button on:click={stopTvProxy} disabled={tvBusy !== "idle"} title="Stop the mitmproxy sidecar (closes the proxy, the browser window stays)">
-                  {tvBusy === "stop" ? "Stopping…" : "Stop proxy"}
-                </button>
-              {/if}
-              <button on:click={setupTvProxy} disabled={tvBusy !== "idle"} title="Reinstall the venv and refresh the cert (rare)">
-                Reinstall
-              </button>
-            </div>
-            <p class="hint">
-              Cascada will open TradingView in {tvStatus?.browserPath?.includes("Edge") ? "Edge" : tvStatus?.browserPath?.includes("Brave") ? "Brave" : "Chrome"} with a sandboxed profile.
-              Place any tiny trade once you're in — your master account appears here automatically.
-            </p>
-            <p class="hint">
-              Email/password and Google/Apple OAuth all work — Cascada tunnels Google + Apple
-              auth domains around mitmproxy so Chrome accepts the real provider cert. TradingView
-              traffic itself stays intercepted.
-            </p>
-          {/if}
-        {:else}
-          <p class="lead">
-            Install <code>CascadaBridge.{mode === "MT4" ? "mq4" : "mq5"}</code>, enable <strong>AutoTrading</strong>, and drag the EA onto any chart — your account appears here automatically. No network setup needed. Multiple {mode} terminals are supported in parallel.
-          </p>
-          <div class="install-row">
-            <button class="primary" on:click={installMtEaAuto}>Auto-install Expert Advisor</button>
-            <button on:click={installMtEaManual}>Pick location…</button>
-          </div>
-        {/if}
-        {#if installStatus && !pythonMissing}
-          <div class="inst-status {installStatus.kind}">{installStatus.text}</div>
-        {/if}
-      </div>
-    </div>
+    <AddAccountWizard />
   {/if}
 
   {#if accounts.length === 0}
@@ -640,191 +354,6 @@
 </div>
 
 <style>
-  .ea-update-banner {
-    display: flex; align-items: center; gap: 12px;
-    padding: 12px 16px;
-    margin: 0 16px 0;
-    border-top: 1px solid #FED7AA;
-    background: linear-gradient(135deg, #FFF7ED, #FEF3C7);
-    color: #7C2D12;
-  }
-  .ea-dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: #F97316;
-    box-shadow: 0 0 0 4px rgba(249, 115, 22, 0.18);
-    flex-shrink: 0;
-  }
-  .ea-msg { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-  .ea-msg .muted { color: #9A3412; opacity: 0.8; }
-  .primary.sm { font-size: 12px; padding: 6px 12px; }
-
-  .wizard {
-    padding: 20px 22px 24px;
-    border-bottom: 1px solid var(--border);
-    background: linear-gradient(180deg, #fafbfc 0%, #ffffff 100%);
-    display: flex; flex-direction: column; gap: 18px;
-  }
-  .platforms { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
-  .plat-card {
-    display: flex; flex-direction: column; gap: 4px;
-    padding: 14px 16px;
-    border: 1.5px solid var(--border); border-radius: 10px;
-    background: #fff; text-align: left; cursor: pointer;
-    transition: all 0.12s ease;
-  }
-  .plat-card:hover { border-color: #cbd5e1; transform: translateY(-1px); }
-  .plat-card.active { border-color: var(--primary); background: var(--primary-soft); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08); }
-  .plat-badge {
-    align-self: flex-start;
-    font-size: 10px; font-weight: 600; letter-spacing: 0.04em;
-    padding: 2px 7px; border-radius: 4px;
-    background: var(--surface-muted); color: var(--text-2);
-  }
-  .plat-badge.cTrader { background: #dbeafe; color: #1d4ed8; }
-  .plat-badge.MT4     { background: #fef3c7; color: #a16207; }
-  .plat-badge.MT5     { background: #dcfce7; color: #15803d; }
-  .plat-badge.TradingView { background: #eff6ff; color: #1d4ed8; }
-  .plat-badge-row { display: flex; align-items: center; gap: 6px; }
-  .plat-name { font-size: 14px; font-weight: 600; color: var(--text); }
-  .plat-tag  { font-size: 11px; color: var(--text-muted); }
-
-  .tv-warning {
-    display: block;
-    margin-bottom: 12px;
-    padding: 8px 12px;
-    border-radius: 6px;
-    background: linear-gradient(135deg, rgba(249, 115, 22, 0.12), rgba(245, 158, 11, 0.12));
-    border-left: 3px solid #f97316;
-    font-size: 13px;
-    color: var(--text);
-  }
-  .tv-warning strong { color: #c2410c; }
-
-  .tv-steps {
-    margin: 0; padding-left: 22px;
-    font-size: 13px; color: var(--text);
-    line-height: 1.7;
-  }
-  .tv-steps li code {
-    background: #fff; padding: 1px 6px; border-radius: 4px;
-    font-size: 12px;
-  }
-  .tv-steps a { color: var(--primary); text-decoration: none; }
-  .tv-steps a:hover { text-decoration: underline; }
-  .tv-platform-cmd {
-    margin: 4px 0 4px; padding-left: 14px;
-    list-style: none; display: flex; flex-direction: column; gap: 2px;
-  }
-  .tv-platform-cmd li { line-height: 1.6; }
-  .tv-platform-cmd .muted { display: inline-block; min-width: 145px; }
-
-  .tv-status {
-    display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
-    font-size: 12px;
-  }
-  .tv-pill {
-    display: inline-flex; align-items: center; gap: 6px;
-    font-weight: 600; font-size: 11px; letter-spacing: 0.02em;
-    padding: 3px 9px; border-radius: 999px;
-    border: 1px solid transparent;
-  }
-  .tv-pill::before {
-    content: ""; width: 7px; height: 7px; border-radius: 50%;
-    background: currentColor;
-  }
-  .tv-pill.on   { background: #f0fdf4; color: #166534; border-color: #bbf7d0; }
-  .tv-pill.idle { background: #fef9c3; color: #92400e; border-color: #fde68a; }
-  .tv-pill.off  { background: #f1f5f9; color: #475569; border-color: #cbd5e1; }
-  .tv-err { color: #b91c1c; }
-
-  .instructions {
-    padding: 14px 16px;
-    background: var(--surface-muted);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    display: flex; flex-direction: column; gap: 10px;
-  }
-  .lead { margin: 0; font-size: 13px; color: var(--text); }
-  .lead code { background: #fff; padding: 1px 6px; border-radius: 4px; font-size: 12px; }
-  .install-row { display: flex; gap: 8px; flex-wrap: wrap; }
-  .inst-status {
-    font-size: 12px; padding: 8px 12px; border-radius: 6px;
-    border: 1px solid transparent;
-  }
-  .inst-status.info { background: #eff6ff; color: #1e40af; border-color: #bfdbfe; }
-  .inst-status.ok   { background: #f0fdf4; color: #166534; border-color: #bbf7d0; }
-  .inst-status.err  { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
-
-  .py-required, .browser-required {
-    display: flex; flex-direction: column; gap: 12px;
-    padding: 14px 16px;
-    border: 1px solid #FED7AA;
-    background: linear-gradient(135deg, #FFF7ED, #FEFCE8);
-    border-radius: 8px;
-  }
-  .py-required-head { display: flex; flex-direction: column; gap: 2px; }
-  .py-required-head strong { font-size: 13px; color: #7C2D12; }
-  .py-steps {
-    margin: 0; padding-left: 22px;
-    font-size: 13px; color: var(--text);
-    line-height: 1.7;
-  }
-  .py-steps em { color: #7C2D12; font-style: normal; font-weight: 600; }
-  .btn-link {
-    display: inline-flex; align-items: center;
-    padding: 8px 14px; border-radius: 6px;
-    font-size: 13px; font-weight: 500;
-    text-decoration: none;
-  }
-  .btn-link.primary {
-    background: var(--primary); color: #fff;
-  }
-  .btn-link.primary:hover { filter: brightness(1.06); }
-
-  .warn-hint {
-    background: #FEF3C7;
-    border-left: 3px solid #F59E0B;
-    padding: 8px 12px;
-    border-radius: 4px;
-    color: #78350F;
-  }
-
-  /* Inline spinner used inside primary buttons during async work. */
-  .spinner {
-    display: inline-block;
-    width: 12px; height: 12px;
-    margin-right: 8px;
-    border: 2px solid currentColor;
-    border-right-color: transparent;
-    border-radius: 50%;
-    animation: spin 0.7s linear infinite;
-    vertical-align: -2px;
-    opacity: 0.85;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  /* Indeterminate progress bar for the venv + pip install phase. The
-     fill segment slides across to communicate "work is happening" without
-     pretending to know the actual percentage. */
-  .setup-progress {
-    display: flex; flex-direction: column; gap: 6px;
-    padding: 4px 0;
-  }
-  .setup-progress-bar {
-    height: 4px; border-radius: 999px;
-    background: var(--border);
-    overflow: hidden;
-  }
-  .setup-progress-fill {
-    height: 100%; width: 35%; border-radius: 999px;
-    background: linear-gradient(90deg, var(--primary), #60a5fa);
-    animation: setup-slide 1.4s ease-in-out infinite;
-  }
-  @keyframes setup-slide {
-    0%   { transform: translateX(-100%); }
-    100% { transform: translateX(380%); }
-  }
-
   .empty-title { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
   .empty-body { font-size: 13px; color: var(--text-muted); }
 
@@ -924,6 +453,7 @@
   .toggle.on .toggle-thumb { left: 14px; }
   .toggle.off { color: #64748b; }
   .toggle:hover { filter: brightness(0.97); }
+
   .row.orphan {
     grid-template-columns: auto 1fr auto auto auto auto;
     background: #fff;
@@ -959,6 +489,7 @@
     border: 1px solid var(--primary); border-radius: 4px;
     background: #fff; width: 100%;
   }
+
   .status-pill {
     display: inline-flex; align-items: center; gap: 6px;
     font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
@@ -985,6 +516,7 @@
     0%, 100% { box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2); }
     50%      { box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.08); }
   }
+
   .row-actions { display: inline-flex; gap: 6px; justify-content: flex-end; }
   .row-actions.wrap { flex-wrap: wrap; max-width: 100%; }
 

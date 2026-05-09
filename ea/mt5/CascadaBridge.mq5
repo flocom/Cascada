@@ -620,8 +620,12 @@ void DoModify(const string line)
    if(PositionSelectByTicket(ticket))
    {
       string sym = PositionGetString(POSITION_SYMBOL);
-      double new_sl = (sl > 0) ? NormalizePrice(sym, sl) : PositionGetDouble(POSITION_SL);
-      double new_tp = (tp > 0) ? NormalizePrice(sym, tp) : PositionGetDouble(POSITION_TP);
+      // Master sends the COMPLETE desired state on every modify, so 0
+      // means "remove this level" (not "leave unchanged"). Without this,
+      // PositionModify falls back to the current SL/TP and the broker
+      // returns "No changes" — leaving the slave's stops out of sync.
+      double new_sl = (sl > 0) ? NormalizePrice(sym, sl) : 0;
+      double new_tp = (tp > 0) ? NormalizePrice(sym, tp) : 0;
       if(!trade.PositionModify(ticket, new_sl, new_tp))
          WriteLog("error", "modify failed: " + trade.ResultComment());
       return;
@@ -632,8 +636,8 @@ void DoModify(const string line)
    if(ord.Select(ticket))
    {
       string sym = ord.Symbol();
-      double new_sl = (sl > 0) ? NormalizePrice(sym, sl) : ord.StopLoss();
-      double new_tp = (tp > 0) ? NormalizePrice(sym, tp) : ord.TakeProfit();
+      double new_sl = (sl > 0) ? NormalizePrice(sym, sl) : 0;
+      double new_tp = (tp > 0) ? NormalizePrice(sym, tp) : 0;
       if(!trade.OrderModify(ticket, ord.PriceOpen(), new_sl, new_tp,
                             (ENUM_ORDER_TYPE_TIME)ord.TypeTime(), ord.TimeExpiration()))
          WriteLog("error", "modify (pending fallback) failed: " + trade.ResultComment());
@@ -652,8 +656,8 @@ void DoModifyPending(const string line)
    if(!ord.Select(ticket)) { WriteLog("warn", "modify_pending: ticket not found"); return; }
    string sym = ord.Symbol();
    double new_tgt = (tgt > 0) ? NormalizePrice(sym, tgt) : ord.PriceOpen();
-   double new_sl  = (sl > 0)  ? NormalizePrice(sym, sl)  : ord.StopLoss();
-   double new_tp  = (tp > 0)  ? NormalizePrice(sym, tp)  : ord.TakeProfit();
+   double new_sl  = (sl > 0)  ? NormalizePrice(sym, sl)  : 0;
+   double new_tp  = (tp > 0)  ? NormalizePrice(sym, tp)  : 0;
    ENUM_ORDER_TYPE_TIME tt = (expiry_ms > 0) ? ORDER_TIME_SPECIFIED : (ENUM_ORDER_TYPE_TIME)ord.TypeTime();
    datetime expiry_dt = (expiry_ms > 0) ? (datetime)(expiry_ms / 1000) : ord.TimeExpiration();
    if(!trade.OrderModify(ticket, new_tgt, new_sl, new_tp, tt, expiry_dt))

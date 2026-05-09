@@ -735,10 +735,17 @@ fn bundled_python_exe(dir: &Path) -> PathBuf {
 /// path) if it reports >= MIN_PY. Used for both the bundled interpreter
 /// and PATH candidates.
 async fn probe_python(exe: &Path) -> Result<PythonInfo> {
-    let out = cmd(exe)
+    // Bail after 5 s. The bundled python-build-standalone binary on
+    // macOS arm64 occasionally gets stuck in dyld validation on first
+    // launch — without a timeout the whole setup() blocks indefinitely
+    // and the UI's "Installing…" spinner never resolves. On timeout we
+    // surface an error so resolve_python falls through to PATH detection.
+    let fut = cmd(exe)
         .arg("-c")
         .arg("import sys; print('%d.%d %s' % (sys.version_info.major, sys.version_info.minor, sys.executable))")
-        .output().await
+        .output();
+    let out = tokio::time::timeout(std::time::Duration::from_secs(5), fut).await
+        .map_err(|_| anyhow!("{}: probe timed out (>5s)", exe.display()))?
         .map_err(|e| anyhow!("{}: {e}", exe.display()))?;
     if !out.status.success() {
         return Err(anyhow!("{}: exited {}", exe.display(), out.status));

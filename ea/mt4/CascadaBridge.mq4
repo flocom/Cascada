@@ -548,8 +548,10 @@ void DoModify(const string line)
    double tp  = StringToDouble(JsonField(line, "tp"));
    if(!OrderSelect(ticket, SELECT_BY_TICKET)) { WriteLog("warn", "modify: ticket not found"); return; }
    string sym = OrderSymbol();
-   double new_sl = (sl > 0) ? NormalizePrice(sym, sl) : OrderStopLoss();
-   double new_tp = (tp > 0) ? NormalizePrice(sym, tp) : OrderTakeProfit();
+   // Master sends the COMPLETE desired state on every modify, so 0
+   // means "remove this level" (not "leave unchanged").
+   double new_sl = (sl > 0) ? NormalizePrice(sym, sl) : 0;
+   double new_tp = (tp > 0) ? NormalizePrice(sym, tp) : 0;
    if(!OrderModify(ticket, OrderOpenPrice(), new_sl, new_tp, 0, clrNONE))
       WriteLog("error", "modify failed: " + IntegerToString(GetLastError()));
 }
@@ -564,8 +566,8 @@ void DoModifyPending(const string line)
    if(!OrderSelect(ticket, SELECT_BY_TICKET)) { WriteLog("warn", "modify_pending: ticket not found"); return; }
    string sym = OrderSymbol();
    double new_tgt = (tgt > 0) ? NormalizePrice(sym, tgt) : OrderOpenPrice();
-   double new_sl  = (sl  > 0) ? NormalizePrice(sym, sl)  : OrderStopLoss();
-   double new_tp  = (tp  > 0) ? NormalizePrice(sym, tp)  : OrderTakeProfit();
+   double new_sl  = (sl  > 0) ? NormalizePrice(sym, sl)  : 0;
+   double new_tp  = (tp  > 0) ? NormalizePrice(sym, tp)  : 0;
    datetime exp = (expiry_ms > 0) ? (datetime)(expiry_ms / 1000) : OrderExpiration();
    if(!OrderModify(ticket, new_tgt, new_sl, new_tp, exp, clrNONE))
       WriteLog("error", "pending modify failed: " + IntegerToString(GetLastError()));
