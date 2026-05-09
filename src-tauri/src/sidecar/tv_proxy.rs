@@ -461,13 +461,14 @@ impl TvProxyManager {
             // user's log panel. The addon emits its own structured logs
             // for the events Cascada cares about.
             .arg("--set").arg("flow_detail=0")
-            // Surface info-level logs from the addon. Mitmproxy 12
-            // defaults `termlog_verbosity` so high that `ctx.log.info`
-            // from the bundled cascada_addon.py never reaches stdout —
-            // discovery, body diagnostics, and bridge-attached events
-            // all silently disappeared, which is what made the
-            // PaperTrading flow look like a black box during testing.
-            .arg("--set").arg("termlog_verbosity=info")
+            // Silence mitmproxy core's per-flow chatter (`client connect`,
+            // `server connect`, WebSocket ping/pong) — it floods the
+            // user's Logs panel with hundreds of events per minute and
+            // drowns the actual signal. Our addon writes its own
+            // structured one-liners directly to stderr (see `_log` in
+            // cascada_addon.py), so they bypass this filter and remain
+            // visible regardless of what mitmproxy decides to print.
+            .arg("--set").arg("termlog_verbosity=warn")
             // Pass-through (don't MITM) hosts that ship hard-coded cert
             // pins beyond what `--ignore-certificate-errors-spki-list`
             // can satisfy. Without this, Google / Apple / Microsoft
@@ -574,28 +575,42 @@ impl TvProxyManager {
         tokio::fs::create_dir_all(&profile_dir).await?;
 
         self.log(LogLevel::Info, format!(
-            "tv-proxy: opening {} in isolated browser ({})",
-            "TradingView", browser.display()));
+            "tv-proxy: opening TradingView in isolated browser ({})",
+            browser.display()));
 
-        // `--app=` mode would be cleaner UX-wise (no browser chrome) but
-        // TradingView legitimately needs tabs (chart + screener + etc) so
-        // we open a normal window. The user_data_dir keeps everything
-        // sandboxed regardless.
+        // Static portion of the Chrome command line. The dynamic args
+        // (proxy-server, user-data-dir, spki list, target URL) follow
+        // below. `--app=` would hide browser chrome but TradingView's
+        // chart + screener + watchlist tabs all need full Chrome UI,
+        // so we run a normal window with a sandboxed user_data_dir.
         //
+        // `--disable-quic` is the load-bearing flag here: without it
+        // Chrome upgrades repeat-visit hosts to HTTP/3 over UDP and
+        // the request never enters mitmdump's TCP CONNECT tunnel —
+        // every /trading/place call would silently bypass the proxy.
+        // `UseDnsHttpsSvcb` is the modern DNS-side equivalent (HTTPS
+        // resource records), disabling it forces classic A/AAAA
+        // lookups so all candidates resolve to TCP-only endpoints.
+        const STATIC_ARGS: &[&str] = &[
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-quic",
+            "--disable-features=UseDnsHttpsSvcb",
+        ];
+
         // `kill_on_drop(true)` couples the browser's lifetime to
-        // TvProxyManager — when the user quits Cascada (which the main.rs
-        // CloseRequested handler turns into a `stop()` call), the proxy
-        // goes down AND the browser closes, instead of leaving a
-        // TradingView window pointed at a dead 127.0.0.1:8080. We also
-        // explicitly kill any previous browser child so re-clicking
-        // "Open TradingView" doesn't accumulate windows.
+        // TvProxyManager — when the user quits Cascada (which the
+        // main.rs CloseRequested handler turns into a `stop()` call),
+        // the proxy goes down AND the browser closes, instead of
+        // leaving a TradingView window pointed at a dead 127.0.0.1:8080.
+        // We also explicitly kill any previous browser child below so
+        // re-clicking "Open TradingView" doesn't accumulate windows.
         let mut spawn = cmd(&browser);
         spawn
             .arg(format!("--proxy-server=127.0.0.1:{}", self.port))
             .arg(format!("--user-data-dir={}", profile_dir.display()))
             .arg(format!("--ignore-certificate-errors-spki-list={spki}"))
-            .arg("--no-first-run")
-            .arg("--no-default-browser-check")
+            .args(STATIC_ARGS)
             .arg("https://www.tradingview.com/chart/")
             .stdout(Stdio::null())
             .stderr(Stdio::null())

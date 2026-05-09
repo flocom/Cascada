@@ -1,58 +1,19 @@
+"""mitmproxy addon: TradingView → Cascada bridge.
+
+Bridges a TradingView session (PaperTrading or a TV-broker integration)
+into Cascada's local file-bridge JSONL protocol so the TV account can
+act as a master fanning trades out to MT4/MT5/cTrader slaves.
+
+Run: `mitmdump -s tv-proxy/cascada_addon.py`. Auto-discovers broker_url
++ account_id from the first TV API hit (REST) or pushstream WS frame
+(cross-browser). Manual pin via `--set tv_broker_url=… --set
+tv_account_id=…` still wins. Wire schema lives in
+`src-tauri/src/connectors/proto.rs::S2C`.
+
+Why no `from __future__ import annotations`: PEP 563 stringified
+annotations crash `dataclasses._process_class` on Python 3.12 under
+python-build-standalone's Windows build. PEP 585 generics work natively.
 """
-mitmproxy addon: TradingView → Cascada bridge.
-
-Bridges a TradingView browser session to Cascada's local file-bridge protocol
-(the same JSONL format the cTrader cBot and MT4/MT5 EAs use). Cascada then
-treats the TV PaperTrading / TV-broker account as a master and fans trades
-out to MT4/MT5/cTrader slaves through its existing copy engine.
-
-Zero-config run — just point a proxied browser at this:
-
-    mitmdump -s tv-proxy/cascada_addon.py
-
-The addon sniffs the first TV broker API request and auto-configures itself.
-Manual override (skip auto-discovery, or pin a specific account) still works:
-
-    mitmdump -s tv-proxy/cascada_addon.py \
-        --set tv_broker_url=paper-trading.tradingview.com \
-        --set tv_account_id=PA-1234567 \
-        [--set cascada_root=/path/to/Documents/cAlgo/Cascada]
-
-If `cascada_root` isn't set, the addon mirrors Cascada's own resolution
-(`<home>/Documents/cAlgo/Cascada` on Windows/Linux, `<home>/cAlgo/Cascada`
-on macOS when present, otherwise the Documents-rooted path).
-
-Endpoints captured (the events Cascada needs):
-
-    POST  /accounts/{acc}/orders?...       → S2C::Open (after /executions ack)
-    POST  /accounts/{acc}/executions?...   → fills pending Open events
-    PUT   /accounts/{acc}/positions/{pid}  → S2C::Modify (SL/TP change)
-    DELETE/accounts/{acc}/positions/{pid}  → S2C::Close
-    DELETE/accounts/{acc}/orders/{id}.SL.* → S2C::Modify (SL removed)
-    DELETE/accounts/{acc}/orders/{id}.TP.* → S2C::Modify (TP removed)
-
-The `/instruments` endpoint is fetched once on startup to populate per-symbol
-`pip_size` — Cascada's quote-offset math depends on the broker-reported pip
-size, so always shipping it is the difference between a working drift
-correction and a silently-wrong one (see `engine.rs::effective_pip_size`).
-
-This addon is **read-only on TV**: it observes the user's clicks in the TV
-panel and forwards them. Cascada's own commands (close-from-Cascada, modify
-SL/TP from the slave side) would require an HTTP injector that re-issues
-TV's authenticated requests — left as a future extension; cmd.jsonl is
-parsed but commands are logged-and-dropped so the file format stays
-compatible with the rest of the Cascada connector ecosystem.
-
-Wire format reference: src-tauri/src/connectors/proto.rs (look for `enum S2C`).
-"""
-
-# Note: NOT using `from __future__ import annotations`. Combined with
-# Python 3.12 dataclass introspection (`_is_type` in dataclasses.py),
-# stringified annotations from PEP 563 trigger a crash inside
-# `_process_class` on the first @dataclass decoration when running
-# under python-build-standalone's Windows distribution. Evaluating
-# annotations eagerly avoids that path entirely. We're on 3.12 so
-# `dict[str, float]` and other PEP 585 generics work natively.
 
 import json
 import platform
@@ -144,9 +105,6 @@ _DISCOVER_PAPER_RE = re.compile(
 
 @dataclass
 class PositionMeta:
-    """Last-known SL/TP per position so DELETE on TP/SL nodes can synthesize a
-    Modify with the surviving level zeroed out (Cascada's wire treats 0 as
-    'unset', see `proto.rs::opt`)."""
     symbol: str = ""
     side: str = "Buy"
     volume: float = 0.0
@@ -155,10 +113,23 @@ class PositionMeta:
     tp: float = 0.0
     pip_size: float = 0.0
     comment: str = ""
-    # `/orders` returns an order id; `/executions` later supplies the
-    # position id. We map order→position so a TP/SL deletion (referenced by
-    # order id) reaches the right Cascada ticket.
+    # TV-broker emits orderId first; /executions later supplies positionId.
+    # We index positions by order_id so SL/TP child deletions resolve.
     order_id: str = ""
+
+
+@dataclass
+class PendingMeta:
+    symbol: str = ""
+    side: str = "Buy"
+    volume: float = 0.0
+    target: float = 0.0
+    sl: float = 0.0
+    tp: float = 0.0
+    expiry: int = 0
+    order_type: str = "Limit"
+    pip_size: float = 0.0
+    comment: str = ""
 
 
 @dataclass
@@ -170,18 +141,39 @@ class TVBridge:
     pip_sizes: dict[str, float] = field(default_factory=dict)
     pending_opens: dict[str, PositionMeta] = field(default_factory=dict)
     positions: dict[str, PositionMeta] = field(default_factory=dict)
+    # PaperTrading is a netting model: each (symbol) holds at most one
+    # net position, addressed by symbol — never by ticket. We bridge to
+    # the ticket-based Cascada wire by remembering which order id we
+    # originally emitted as the open ticket for each live symbol; later
+    # modify/close requests reuse it instead of inventing a new one.
+    paper_position_by_symbol: dict[str, str] = field(default_factory=dict)
+    # Pending limit/stop orders broadcast to the slave wire. Keyed by TV
+    # order id; values track last-emitted target/sl/tp for modify diff.
+    # On fill the entry migrates into `positions`; on cancel it's popped.
+    pending_paper: dict[str, "PendingMeta"] = field(default_factory=dict)
     auth_token: str = ""
     welcomed: bool = False
     last_balance: float = 0.0
     last_equity: float = 0.0
     last_currency: str = "USD"
     write_lock: threading.Lock = field(default_factory=threading.Lock)
-    # Diagnostic: track which (host, /accounts/...-shaped path-prefix)
-    # combinations the proxy has already mentioned so we don't flood
-    # the log when discovery is failing. Each unique combo gets exactly
-    # one "seen-but-ignored" entry so the user can paste them back to
-    # us when reporting "no account detected" issues.
-    _seen_account_paths: set[str] = field(default_factory=set)
+    _skipped_hosts: set[str] = field(default_factory=set)
+    # Quote streaming (Quote-compare feature). The slave-side connector
+    # writes `{op:"subscribe", symbols:[…]}` to cmd.jsonl whenever the
+    # set of mirrored symbols changes; we tail that file from a thread,
+    # latch the set, and emit `Quote` events on every prodata `qsd`
+    # frame for symbols in the set.
+    quote_subs: set[str] = field(default_factory=set)
+    quote_cache: dict[str, dict[str, float]] = field(default_factory=dict)
+    # Pending-emit buffer. TV happily accepts pending orders that are
+    # already past their trigger and fills them within milliseconds.
+    # We hold each fresh `pending` event briefly (~200ms) before
+    # writing it to the wire; if a `pending_fill` for the same id
+    # arrives in that window we drop the buffered pending and emit a
+    # plain `open` instead — the slave broker would have rejected the
+    # pending placement anyway ("Invalid price") and we'd be left
+    # without a mirror.
+    _pending_buffer: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # ─── Lifecycle ──────────────────────────────────────────────────
 
@@ -203,46 +195,18 @@ class TVBridge:
         return f"{self.broker_url}/accounts/{self.account_id}"
 
     def request(self, flow: "http.HTTPFlow") -> None:  # type: ignore[name-defined]
-        # Auto-discovery: snap broker_url + account_id from the first TV
-        # broker API request the proxy sees. We only sniff if neither was
-        # set on the command line, so manual `--set tv_broker_url=...` keeps
-        # full precedence (e.g. when juggling two TV accounts).
         if not (self.broker_url and self.account_id):
             self._try_auto_discover(flow)
 
-        # Capture the auth token from any request to the configured broker —
-        # TV refreshes them periodically; we want the freshest one for
-        # `/instruments` and `/state` polls.
+        # Capture freshest bearer token for the TV-broker `/state` poll
+        # (PaperTrading runs through the WS path and doesn't need it).
         if self.broker_url and self.broker_url in flow.request.pretty_url:
             tok = flow.request.headers.get("authorization")
             if tok:
                 self.auth_token = tok
 
-        # PaperTrading reverse-engineering aid: log the first request
-        # shape we see for each (method, verb) on the PaperTrading host,
-        # BEFORE the `_is_relevant` filter. Some PaperTrading endpoints
-        # (e.g. `/trading/account`) don't have the account id in the
-        # path, so they'd be filtered out before getting here — but
-        # their bodies are still useful for understanding the API.
-        # Cap body preview at ~400 chars per (method, verb) combo.
         url = flow.request.pretty_url
         method = flow.request.method
-        if "papertrading.tradingview.com" in url and method != "GET":
-            tail = url.split("/trading/", 1)[-1] if "/trading/" in url else url
-            verb = (tail.split("/", 1)[0] or "<root>").split("?", 1)[0]
-            key = f"papertrading|{method}|{verb}"
-            if key not in self._seen_account_paths:
-                self._seen_account_paths.add(key)
-                ctype = flow.request.headers.get("content-type", "")
-                body_preview = ""
-                if flow.request.content:
-                    raw = flow.request.content[:400]
-                    try:
-                        body_preview = raw.decode("utf-8", errors="replace")
-                    except Exception:
-                        body_preview = repr(raw)
-                self._log(f"PaperTrading {method} /trading/{verb} "
-                          f"ct={ctype!r} body={body_preview!r}")
 
         if not self._is_relevant(flow):
             return
@@ -272,6 +236,22 @@ class TVBridge:
         method = flow.request.method
         url = flow.request.pretty_url
 
+        # PaperTrading: bodies arrive as JSON despite the
+        # `application/x-www-form-urlencoded` Content-Type (TV bug).
+        if "papertrading.tradingview.com" in url and "/trading/" in url:
+            verb = url.split("/trading/", 1)[-1].split("/", 1)[0].split("?", 1)[0]
+            if method != "POST":
+                return
+            req_body = self._parse_paper_body(flow.request.content)
+            if verb == "place":
+                self._on_paper_place(req_body, data)
+            elif verb == "close_position":
+                self._on_paper_close(req_body, data)
+            elif verb == "modify_position":
+                self._on_paper_modify(req_body, data)
+            # `cancel` is handled via the WS pending_cancel path.
+            return
+
         if method == "POST" and "/orders?" in url:
             self._on_order(dict(flow.request.urlencoded_form or {}), data)
         elif method == "POST" and "/executions?" in url:
@@ -296,9 +276,8 @@ class TVBridge:
             ref = (flow.request.headers.get("referer", "")
                    + "|" + flow.request.headers.get("origin", ""))
             if "tradingview.com" not in host and "tradingview.com" not in ref:
-                key = f"{host}|noref"
-                if key not in self._seen_account_paths:
-                    self._seen_account_paths.add(key)
+                if host not in self._skipped_hosts:
+                    self._skipped_hosts.add(host)
                     self._log(f"discovery skipped (no tradingview.com in referer/origin/host): {host} {account_id}")
                 return
             self._log(f"auto-discovered TV broker={host} account={account_id}")
@@ -313,14 +292,6 @@ class TVBridge:
             self.configure(host, account_id, self.cascada_root_override)
             return
 
-        # Diagnostic for unmatched URLs that LOOK like account/trading
-        # endpoints — helps debug "no account detected" reports without
-        # the user / us trial-and-erroring on the regex.
-        if "tradingview" in url and ("/accounts/" in url or "/trading/" in url):
-            key = url.split("?", 1)[0].rsplit("/", 1)[0][:200]
-            if key not in self._seen_account_paths:
-                self._seen_account_paths.add(key)
-                self._log(f"saw TV account/trading URL but didn't match discovery regex: {flow.request.method} {key}")
 
     # ─── Event handlers ──────────────────────────────────────────────
 
@@ -402,7 +373,577 @@ class TVBridge:
             meta.sl = 0.0
         elif level == "TP":
             meta.tp = 0.0
-        self._emit({"ev": "modify", "ticket": pid, "sl": meta.sl, "tp": meta.tp})
+        self._emit({"ev": "modify", "ticket": pid, "sl": meta.sl, "tp": meta.tp, "ts": now_ms()})
+
+    # ─── PaperTrading handlers ──────────────────────────────────────────────
+    #
+    # PaperTrading endpoints (POST):
+    #   /trading/place           { symbol, type, qty, side, price, sl, tp, … }
+    #   /trading/cancel          { id }
+    #   /trading/close_position  { symbol, qty? }
+    #   /trading/modify_position { symbol, stopLoss, takeProfit }
+    # Bodies are JSON despite the misadvertised `x-www-form-urlencoded`
+    # Content-Type. Symbols arrive exchange-prefixed (`OANDA:AUDCAD`)
+    # and are stripped to match broker symbols on the slave side.
+
+    def _parse_paper_body(self, raw: bytes | None) -> dict[str, Any]:
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _strip_exchange(symbol: str) -> str:
+        s = (symbol or "").upper()
+        return s.split(":", 1)[1] if ":" in s else s
+
+    @staticmethod
+    def _qty_to_lots(qty: float, symboltype: str) -> float:
+        # Forex on TV PaperTrading is reported in base units (1 lot =
+        # 100 000), so qty=1000 → 0.01 lot. Crypto/spot are already in
+        # instrument units that match MT5 lot convention (BTC qty=1.0111
+        # → 1.0111 lot). Metals (XAU lot=100 oz) is TBD when we see a
+        # sample.
+        return qty / 100_000.0 if (symboltype or "").lower() == "forex" else qty
+
+    def _on_paper_place(self, req: dict[str, Any], resp: dict[str, Any]) -> None:
+        # PaperTrading reflows every order through /trading/place,
+        # including the counter-order TV uses internally to close. We
+        # only ever see the OPENING intent here because the user-driven
+        # close goes through /trading/close_position first.
+        symbol = self._strip_exchange(req.get("symbol", ""))
+        if not symbol:
+            return
+        order_id = str((resp or {}).get("id") or "")
+        if not order_id:
+            return
+        symboltype = str((resp or {}).get("symboltype") or req.get("symboltype") or "forex")
+        meta = PositionMeta(
+            symbol=symbol,
+            side=to_side(req.get("side", "")),
+            volume=self._qty_to_lots(_safe_float(req.get("qty")), symboltype),
+            price=_safe_float(req.get("price")),
+            sl=_safe_float(req.get("stopLoss") or req.get("sl") or req.get("stop_loss")),
+            tp=_safe_float(req.get("takeProfit") or req.get("tp") or req.get("take_profit")),
+            pip_size=self.pip_sizes.get(symbol, 0.0),
+            comment=str(req.get("comment") or req.get("note") or ""),
+            order_id=order_id,
+        )
+        # Limit orders are picked up via the WS pending lifecycle —
+        # nothing to emit from REST.
+        if str(req.get("type") or "").lower() == "limit":
+            return
+        self.positions[order_id] = meta
+        self.paper_position_by_symbol[symbol] = order_id
+        self._emit_open(order_id, meta)
+        self._log(f"open {symbol} {meta.side} {meta.volume:g} lot "
+                  f"sl={meta.sl} tp={meta.tp} ticket={order_id}")
+
+    def _on_paper_close(self, req: dict[str, Any], _resp: dict[str, Any]) -> None:
+        # Netting model: request identifies target by `symbol`, not ticket.
+        # close_qty is in raw forex units (TV doesn't echo symboltype on
+        # close — assume forex which is the only type where qty != lots).
+        symbol = self._strip_exchange(req.get("symbol", ""))
+        ticket = self.paper_position_by_symbol.get(symbol)
+        meta = self.positions.get(ticket) if ticket else None
+        if not meta:
+            return
+        close_qty = self._qty_to_lots(_safe_float(req.get("qty")), "forex")
+        if close_qty <= 0 or close_qty >= meta.volume:
+            self.positions.pop(ticket, None)
+            self.paper_position_by_symbol.pop(symbol, None)
+            self._emit_close(ticket, 0.0)
+            self._log(f"close {symbol} ticket={ticket}")
+            return
+        # Partial close: close the master ticket and re-open a smaller
+        # one — the wire has no native partial-close event.
+        self.positions.pop(ticket, None)
+        self._emit_close(ticket, 0.0)
+        new_ticket = f"{ticket}-r"
+        new_volume = max(meta.volume - close_qty, 0.0)
+        if new_volume <= 0:
+            self.paper_position_by_symbol.pop(symbol, None)
+            self._log(f"close {symbol} ticket={ticket}")
+            return
+        new_meta = PositionMeta(
+            symbol=meta.symbol, side=meta.side, volume=new_volume,
+            price=meta.price, sl=meta.sl, tp=meta.tp,
+            pip_size=meta.pip_size, comment=meta.comment,
+            order_id=new_ticket,
+        )
+        self.positions[new_ticket] = new_meta
+        self.paper_position_by_symbol[symbol] = new_ticket
+        self._emit_open(new_ticket, new_meta)
+        self._log(f"partial close {symbol} ticket={ticket} "
+                  f"-> remainder {new_volume:g} lot ticket={new_ticket}")
+
+    def _on_paper_modify(self, req: dict[str, Any], _resp: dict[str, Any]) -> None:
+        symbol = self._strip_exchange(req.get("symbol", ""))
+        ticket = self.paper_position_by_symbol.get(symbol)
+        meta = self.positions.get(ticket) if ticket else None
+        if not meta:
+            return
+        sl = req.get("sl") or req.get("stopLoss") or req.get("stop_loss")
+        tp = req.get("tp") or req.get("takeProfit") or req.get("take_profit")
+        if sl is not None:
+            meta.sl = _safe_float(sl)
+        if tp is not None:
+            meta.tp = _safe_float(tp)
+        self._emit({"ev": "modify", "ticket": ticket,
+                    "sl": meta.sl, "tp": meta.tp, "ts": now_ms()})
+        self._log(f"modify {symbol} ticket={ticket} sl={meta.sl} tp={meta.tp}")
+
+    # ─── WebSocket bridge ─────────────────────────────────────────────
+    #
+    # TV restricts each user to one active REST session. The browser
+    # the user keeps in front gets the `/trading/account` API; every
+    # other client (incl. Cascada-Chrome on the same login) sees 401.
+    # The WebSocket pushstream stays alive regardless and broadcasts
+    # the full order/position lifecycle to every connected client of
+    # the account, so we read trades off it instead of polling REST.
+    def on_websocket_message(self, flow: "http.HTTPFlow") -> None:  # type: ignore[name-defined]
+        ws = getattr(flow, "websocket", None)
+        if ws is None or not ws.messages:
+            return
+        msg = ws.messages[-1]
+        host = flow.request.host if flow.request else ""
+        if msg.from_client or not msg.is_text:
+            return
+        text = (msg.content.decode("utf-8", errors="replace")
+                if isinstance(msg.content, bytes) else str(msg.content))
+
+        # prodata: chart-data WS, carries `~m~LEN~m~JSON` frames. Quotes
+        # arrive as `m=qsd` payloads we surface as Quote events for the
+        # symbols the slave has subscribed to.
+        if "prodata.tradingview" in host or "data.tradingview" in host:
+            for chunk in re.findall(r'~m~\d+~m~(\{[^~]*\})', text):
+                try:
+                    obj = json.loads(chunk)
+                except Exception:
+                    continue
+                if isinstance(obj, dict) and obj.get("m") == "qsd":
+                    self._on_qsd(obj.get("p") or [])
+            return
+
+        # pushstream: trade lifecycle WS.
+        if "pushstream" in host:
+            try:
+                obj = json.loads(text)
+            except Exception:
+                return
+            if isinstance(obj, dict):
+                self._on_pushstream_frame(obj.get("text") or {})
+
+    def _on_qsd(self, params: list) -> None:
+        # qsd payload: ["qs_session", {"n":"<exchange>:<sym>", "v":{bid,ask,
+        # pricescale,…}, "s":"ok"}]. `v` is a delta — bid/ask only appear
+        # when they tick. Cache last-known so we emit a complete Quote
+        # frame on every update for subscribed symbols.
+        if len(params) < 2 or not isinstance(params[1], dict):
+            return
+        payload = params[1]
+        symbol = self._strip_exchange(payload.get("n", ""))
+        if not symbol:
+            return
+        v = payload.get("v") or {}
+        if not isinstance(v, dict):
+            return
+        cached = self.quote_cache.setdefault(
+            symbol, {"bid": 0.0, "ask": 0.0, "pip_size": 0.0})
+        if "bid" in v:
+            try: cached["bid"] = float(v["bid"])
+            except (TypeError, ValueError): pass
+        if "ask" in v:
+            try: cached["ask"] = float(v["ask"])
+            except (TypeError, ValueError): pass
+        # pricescale=10^precision (TV convention). Forex 5-digit gives
+        # pricescale=100000 → pip_size=0.0001 (one tenth of the smallest
+        # quoted increment — the standard fx pip).
+        ps = v.get("pricescale")
+        if isinstance(ps, (int, float)) and ps > 0:
+            cached["pip_size"] = 10.0 / float(ps)
+        if (symbol in self.quote_subs
+                and cached["bid"] > 0 and cached["ask"] > 0):
+            self._emit({
+                "ev": "quote",
+                "symbol": symbol,
+                "bid": cached["bid"],
+                "ask": cached["ask"],
+                "pip_size": cached["pip_size"],
+                "ts": now_ms(),
+            })
+
+    def _on_pushstream_frame(self, txt: dict[str, Any]) -> None:
+        # The `trading` channel envelope is `{channel, content:{m, p, accountId}}`.
+        # Only `order_update` and `position_update` are routed: account_change
+        # / execution / balance / journal are either redundant or fire on
+        # partial closes (which would mis-emit a full close to the slave).
+        if txt.get("channel") != "trading":
+            return
+        content = txt.get("content") or {}
+        if not isinstance(content, dict):
+            return
+        frame_account = str(content.get("accountId") or "")
+        if not frame_account:
+            return
+        # Cross-browser bootstrap: when the user trades from a non-Cascada
+        # browser, REST auto-discovery never fires. Use the first WS frame
+        # to seed account_id AND go through configure() so out_dir lands
+        # under cascada_root/TradingView/<id>/ where the slave EA tails.
+        if not self.account_id:
+            self.configure("papertrading.tradingview.com",
+                           frame_account, self.cascada_root_override)
+            self._log(f"auto-discovered TV PaperTrading account={frame_account} (ws)")
+        elif frame_account != self.account_id:
+            return
+        m = content.get("m")
+        p = content.get("p") or {}
+        if not isinstance(p, dict):
+            return
+        if m == "order_update":
+            self._on_paper_order_update(p)
+        elif m == "position_update":
+            self._on_paper_position_update(p)
+
+    def _on_paper_order_update(self, p: dict[str, Any]) -> None:
+        # Frame shape: { id, symbol, symboltype, side, qty, type:
+        # "market"|"limit"|"stop"|"stoplimit", status: "pending"|"filled"|
+        # "canceled"|…, sl, tp, close-date, label, parent }. TV's
+        # PaperTrading is a netting account so the entry order id is
+        # reused as the position ticket for the lifetime of the position.
+        symbol = self._strip_exchange(p.get("symbol", ""))
+        if not symbol:
+            return
+        order_id = str(p.get("id") or "")
+        label = str(p.get("label") or "")
+        close_date = p.get("close-date")
+        side = to_side(p.get("side", ""))
+        symboltype = str(p.get("symboltype") or "forex")
+        qty_abs = abs(self._qty_to_lots(_safe_float(p.get("qty")), symboltype))
+        sl = _safe_float(p.get("sl"))
+        tp = _safe_float(p.get("tp"))
+        order_type = str(p.get("type") or "").lower()
+        status = str(p.get("status") or "").lower()
+        target = _safe_float(p.get("price"))
+        pip_size = self.pip_sizes.get(symbol, 0.0)
+
+        # Child SL/TP order — TV emits one of these whenever the user
+        # sets a stop or take-profit. The `parent` field points back
+        # at the parent order; we route to position-modify if the
+        # parent owns an open position, otherwise treat it as a
+        # pending-modify (the user moved SL/TP on a pending order).
+        if label in ("sl", "tp"):
+            parent_id = str(p.get("parent") or "")
+            ticket = self._ticket_for_order_id(parent_id)
+            if ticket:
+                meta = self.positions.get(ticket)
+                if not meta:
+                    return
+                price = _safe_float(p.get("price"))
+                # Dedup: TV broadcasts both this child and a
+                # `position_update` on every modify, which would
+                # otherwise double-emit. Compare against meta.
+                changed = False
+                if label == "sl" and price and price != meta.sl:
+                    meta.sl = price; changed = True
+                elif label == "tp" and price and price != meta.tp:
+                    meta.tp = price; changed = True
+                if not changed:
+                    return
+                self._emit({"ev": "modify", "ticket": ticket,
+                            "sl": meta.sl, "tp": meta.tp, "ts": now_ms()})
+                self._log(f"modify {symbol} ticket={ticket} "
+                          f"sl={meta.sl} tp={meta.tp} (ws)")
+                return
+            # The parent might be a pending we're tracking. TV will
+            # also re-broadcast the parent order with the new sl/tp
+            # which our pending branch below picks up — so we just
+            # let this child frame fall on the floor.
+            return
+
+        # Pending order lifecycle. TV reports `status="pending"` for
+        # limit/stop orders that haven't filled yet; we mirror those
+        # to the slave as actual pending orders (BuyLimit/SellLimit/
+        # BuyStop/SellStop) instead of waiting for the fill and
+        # placing a market open at the wrong price.
+        is_pending_kind = order_type in ("limit", "stop", "stoplimit")
+        if is_pending_kind and status == "pending" and order_id:
+            order_kind = ("Limit" if order_type == "limit"
+                          else "StopLimit" if order_type == "stoplimit"
+                          else "Stop")
+            # Wrong-side trigger detection: TV accepts orders that are
+            # already past their trigger (e.g. SellStop above current bid)
+            # and fills them instantly. The slave broker rejects those
+            # as "Invalid price" because MT5/cTrader enforce side rules.
+            # Detect via live quote cache and fall through to the
+            # market open path so the slave opens at its market price.
+            if self._already_triggered(symbol, side, order_kind, target):
+                self._log(f"wrong-side {order_kind} → market open "
+                          f"({symbol} {side} target={target}) ticket={order_id}")
+            else:
+                pmeta = PendingMeta(
+                    symbol=symbol, side=side, volume=qty_abs,
+                    target=target, sl=sl, tp=tp,
+                    order_type=order_kind, pip_size=pip_size,
+                )
+                event = {
+                    "ev": "pending",
+                    "ticket": order_id,
+                    "symbol": symbol,
+                    "side": side,
+                    "order_type": order_kind,
+                    "volume": qty_abs,
+                    "target": target,
+                    "sl": sl, "tp": tp,
+                    "expiry": 0,
+                    "pip_size": pip_size,
+                    "ts": now_ms(),
+                }
+                log = (f"pending {symbol} {side} {qty_abs:g} "
+                       f"{order_kind}@{target} sl={sl} tp={tp} "
+                       f"ticket={order_id} (ws)")
+                # Already in the deferred-emit buffer: TV is re-broadcasting
+                # the pending (e.g. with new sl/tp) before we even flushed
+                # the original — just refresh the buffered payload.
+                if order_id in self._pending_buffer:
+                    self._pending_buffer[order_id] = {
+                        "data": event, "log": log, "meta": pmeta,
+                        "ts": self._pending_buffer[order_id]["ts"],
+                    }
+                    return
+                existing = self.pending_paper.get(order_id)
+                if existing is None:
+                    self._pending_buffer[order_id] = {
+                        "data": event, "log": log, "meta": pmeta,
+                        "ts": time.time(),
+                    }
+                elif (existing.target != target or existing.sl != sl
+                        or existing.tp != tp or existing.volume != qty_abs):
+                    existing.target = target
+                    existing.sl = sl; existing.tp = tp
+                    existing.volume = qty_abs
+                    self._emit({
+                        "ev": "pending_modify",
+                        "ticket": order_id,
+                        "target": target,
+                        "sl": sl, "tp": tp,
+                        "volume": qty_abs,
+                        "expiry": 0,
+                        "ts": now_ms(),
+                    })
+                    self._log(f"pending_modify {symbol} ticket={order_id} "
+                              f"target={target} sl={sl} tp={tp} (ws)")
+                return
+
+        # Buffered-pending fast path: TV filled (or cancelled) before
+        # we got a chance to emit the `pending` event to the slave.
+        # On fill we emit a plain `open` so the slave opens at market
+        # instead of trying to place an already-triggered pending. On
+        # cancel we emit nothing — the slave never knew about it.
+        buf = self._pending_buffer.pop(order_id, None) if (
+                close_date is not None or
+                (status and status != "pending")) else None
+        if buf:
+            if any(k in status for k in ("cancel", "reject", "expir")):
+                self._log(f"pending {symbol} ticket={order_id} "
+                          f"cancelled before emit (ws)")
+                return
+            pmeta = buf["meta"]
+            meta = PositionMeta(
+                symbol=symbol, side=pmeta.side, volume=pmeta.volume,
+                price=_safe_float(p.get("price") or p.get("avg_price"))
+                       or pmeta.target,
+                sl=pmeta.sl, tp=pmeta.tp,
+                pip_size=pmeta.pip_size,
+                order_id=order_id,
+            )
+            self.positions[order_id] = meta
+            self.paper_position_by_symbol[symbol] = order_id
+            self._emit_open(order_id, meta)
+            self._log(f"open {symbol} {meta.side} {meta.volume:g} lot "
+                      f"sl={meta.sl} tp={meta.tp} ticket={order_id} (ws/instant-fill)")
+            return
+
+        # Pending termination — the order was tracked as pending and
+        # status flipped (filled / cancelled / rejected / expired).
+        # We split fill vs cancel by the status keyword; on fill we
+        # also seed the position tracker so subsequent modify/close
+        # for the resulting position resolve back to this ticket.
+        if order_id in self.pending_paper and (
+                close_date is not None or
+                (status and status != "pending")):
+            pending = self.pending_paper.pop(order_id)
+            if any(k in status for k in ("cancel", "reject", "expir")):
+                self._emit({"ev": "pending_cancel", "ticket": order_id,
+                            "symbol": symbol, "ts": now_ms()})
+                self._log(f"pending_cancel {symbol} ticket={order_id} (ws)")
+                return
+            self._emit({
+                "ev": "pending_fill",
+                "ticket": order_id,
+                "symbol": symbol,
+                "position_ticket": order_id,
+                "ts": now_ms(),
+            })
+            self._log(f"pending_fill {symbol} ticket={order_id} (ws)")
+            if symbol not in self.paper_position_by_symbol:
+                meta = PositionMeta(
+                    symbol=symbol, side=pending.side, volume=pending.volume,
+                    price=_safe_float(p.get("price") or p.get("avg_price")),
+                    sl=pending.sl, tp=pending.tp,
+                    pip_size=pending.pip_size,
+                    order_id=order_id,
+                )
+                self.positions[order_id] = meta
+                self.paper_position_by_symbol[symbol] = order_id
+            return
+
+        # See note: close-date alone is the order-completed flag, NOT
+        # a position-closed flag — the entry market order also gets a
+        # close-date stamp at fill time. Position closes are detected
+        # via `_on_paper_position_update` (qty=0).
+        if close_date is not None:
+            return
+
+        # Market open path. Limit/stop orders with status != "pending"
+        # were already handled above; a non-pending market order is
+        # a fresh open we register with the order id as ticket.
+        if symbol in self.paper_position_by_symbol:
+            return  # already tracked
+        if not order_id:
+            return
+        meta = PositionMeta(
+            symbol=symbol, side=side, volume=qty_abs,
+            price=_safe_float(p.get("price") or p.get("avg_price")),
+            sl=sl, tp=tp,
+            pip_size=pip_size,
+            order_id=order_id,
+        )
+        self.positions[order_id] = meta
+        self.paper_position_by_symbol[symbol] = order_id
+        self._emit_open(order_id, meta)
+        self._log(f"open {symbol} {side} {qty_abs:g} lot "
+                  f"sl={sl} tp={tp} ticket={order_id} (ws)")
+
+    def _on_paper_position_update(self, p: dict[str, Any]) -> None:
+        # Authoritative net position snapshot per symbol. Drives close
+        # (qty=0), open-when-we-missed-the-order_update (synth ticket),
+        # and SL/TP modify. Sl/tp can live in `levels[0]` (multi-bracket)
+        # or top-level (single-bracket); a MISSING key preserves meta —
+        # TV emits transient frames without sl/tp during a modification
+        # and treating "absent" as 0 would falsely strip the level on
+        # the slave. Short qty is negative; we emit abs() because the
+        # wire carries direction in `side` separately.
+        symbol = self._strip_exchange(p.get("symbol", ""))
+        if not symbol:
+            return
+        symboltype = str(p.get("symboltype") or "forex")
+        qty = abs(self._qty_to_lots(_safe_float(p.get("qty")), symboltype))
+        side = to_side(p.get("side", ""))
+        avg = _safe_float(p.get("avg_price"))
+
+        ticket = self.paper_position_by_symbol.get(symbol)
+
+        # Close: TV sets qty=0 on the position_update emitted right
+        # after a full close. Authoritative — partial closes keep
+        # qty>0 and are surfaced via the volume diff (TODO: wire a
+        # partial_close event; for now the slave keeps full size).
+        if qty <= 0:
+            if ticket:
+                self.positions.pop(ticket, None)
+                self.paper_position_by_symbol.pop(symbol, None)
+                self._emit_close(ticket, 0.0)
+                self._log(f"close {symbol} ticket={ticket} (ws/pos)")
+            return
+
+        # Resolve sl/tp with field-presence semantics: only treat as
+        # "explicit 0" if the key exists in the frame.
+        levels = p.get("levels") or []
+        if levels and isinstance(levels[0], dict):
+            lvl = levels[0]
+            sl_present = "sl" in lvl
+            tp_present = "tp" in lvl
+            sl_new = _safe_float(lvl.get("sl"))
+            tp_new = _safe_float(lvl.get("tp"))
+        else:
+            sl_present = "sl" in p
+            tp_present = "tp" in p
+            sl_new = _safe_float(p.get("sl"))
+            tp_new = _safe_float(p.get("tp"))
+
+        if ticket is None:
+            ticket = f"paper-{self.account_id}-{symbol}"
+            meta = PositionMeta(
+                symbol=symbol, side=side, volume=qty,
+                price=avg,
+                sl=sl_new if sl_present else 0.0,
+                tp=tp_new if tp_present else 0.0,
+                pip_size=self.pip_sizes.get(symbol, 0.0),
+                order_id=ticket,
+            )
+            self.positions[ticket] = meta
+            self.paper_position_by_symbol[symbol] = ticket
+            self._emit_open(ticket, meta)
+            self._log(f"open {symbol} {side} {qty:g} lot "
+                      f"sl={meta.sl} tp={meta.tp} ticket={ticket} (ws/pos)")
+            return
+
+        meta = self.positions.get(ticket)
+        if meta is None:
+            return
+        sl = sl_new if sl_present else meta.sl
+        tp = tp_new if tp_present else meta.tp
+        if sl != meta.sl or tp != meta.tp:
+            meta.sl = sl
+            meta.tp = tp
+            self._emit({"ev": "modify", "ticket": ticket,
+                        "sl": sl, "tp": tp, "ts": now_ms()})
+            self._log(f"modify {symbol} ticket={ticket} sl={sl} tp={tp} (ws/pos)")
+
+    def _already_triggered(self, symbol: str, side: str,
+                           order_kind: str, target: float) -> bool:
+        # True when the requested target is on the wrong side of the
+        # current quote and would fire instantly. Slave brokers reject
+        # such orders ("Invalid price"), so we drop the pending and let
+        # the regular market `open` path take over. Returns False when
+        # we haven't seen any quote for the symbol yet — better to try
+        # the pending and let the slave decide than to mis-classify.
+        if target <= 0:
+            return False
+        q = self.quote_cache.get(symbol)
+        if not q:
+            return False
+        bid, ask = q.get("bid", 0.0), q.get("ask", 0.0)
+        if bid <= 0 or ask <= 0:
+            return False
+        is_sell = (side == "Sell")
+        is_stop = order_kind in ("Stop", "StopLimit")
+        # SellStop fires on bid <= target (price fell), SellLimit on
+        # bid >= target (price rose); BuyStop on ask >= target,
+        # BuyLimit on ask <= target.
+        if is_sell:
+            return bid <= target if is_stop else bid >= target
+        return ask >= target if is_stop else ask <= target
+
+    def _ticket_for_order_id(self, order_id: str) -> str:
+        """Resolve an order id back to the ticket we're tracking. The
+        SL/TP child orders point at the parent via `parent`, which is
+        either the entry-order id we already keyed positions by, or a
+        synthetic `paper-<account>-<symbol>` ticket from the legacy
+        /trading/account poll path."""
+        if not order_id:
+            return ""
+        if order_id in self.positions:
+            return order_id
+        # Fall back to symbol lookup if the position was discovered
+        # via the poll (synthetic ticket) and the parent doesn't match
+        # directly — the meta still carries the live order_id field.
+        for ticket, meta in self.positions.items():
+            if meta.order_id == order_id:
+                return ticket
+        return ""
 
     # ─── Emitters (Cascada wire format) ─────────────────────────────────────
 
@@ -435,6 +976,40 @@ class TVBridge:
             "currency": self.last_currency,
             "account": self.account_id,
         })
+
+    def _handle_cmd(self, line: str) -> None:
+        # cmd.jsonl carries `{op, …}` frames written by Rust's file_bridge.
+        # Only `subscribe` is acted on (drives quote streaming); other ops
+        # are master-side and don't apply to a read-only TV bridge.
+        line = line.strip()
+        if not line:
+            return
+        try:
+            cmd = json.loads(line)
+        except Exception:
+            return
+        if cmd.get("op") != "subscribe":
+            return
+        symbols = cmd.get("symbols") or []
+        new_subs = {str(s).upper() for s in symbols if s}
+        if new_subs == self.quote_subs:
+            return
+        self.quote_subs = new_subs
+        self._log(f"quote subs: {sorted(new_subs) if new_subs else 'none'}")
+        # Replay last-known quotes for each newly-subscribed symbol so
+        # the engine doesn't have to wait for the next tick to see a
+        # value (TV ticks are sparse on slow markets).
+        for sym in new_subs:
+            q = self.quote_cache.get(sym)
+            if q and q.get("bid", 0) > 0 and q.get("ask", 0) > 0:
+                self._emit({
+                    "ev": "quote",
+                    "symbol": sym,
+                    "bid": q["bid"],
+                    "ask": q["ask"],
+                    "pip_size": q.get("pip_size", 0.0),
+                    "ts": now_ms(),
+                })
 
     def emit_heartbeat(self) -> None:
         if not self.welcomed:
@@ -476,20 +1051,28 @@ class TVBridge:
             self._log(f"/instruments error: {e}")
 
     def fetch_state(self) -> None:
+        # Only used by TV-broker integrations (FTMO, OANDA, …) —
+        # PaperTrading runs entirely off the WebSocket bridge now.
         if not (self.broker_url and self.account_id and self.auth_token):
+            return
+        if self.broker_url.endswith("papertrading.tradingview.com"):
             return
         try:
             import requests
         except Exception:
             return
-        url = f"https://{self.broker_url}/accounts/{self.account_id}/state"
         try:
-            r = requests.get(url, headers={
-                "accept": "application/json",
-                "authorization": self.auth_token,
-                "origin": "https://www.tradingview.com",
-                "referer": "https://www.tradingview.com/",
-            }, timeout=8, proxies={"http": None, "https": None})
+            r = requests.get(
+                f"https://{self.broker_url}/accounts/{self.account_id}/state",
+                headers={
+                    "accept": "application/json",
+                    "authorization": self.auth_token,
+                    "origin": "https://www.tradingview.com",
+                    "referer": "https://www.tradingview.com/",
+                },
+                timeout=8,
+                proxies={"http": None, "https": None},
+            )
             if r.status_code != 200:
                 return
             d = r.json().get("d") or {}
@@ -529,12 +1112,8 @@ class TVBridge:
                 f.write(line)
 
     def _log(self, msg: str) -> None:
-        if ctx is not None and getattr(ctx, "log", None) is not None:
-            try:
-                ctx.log.info(f"[cascada] {msg}")
-                return
-            except Exception:
-                pass
+        # Direct stderr (PYTHONUNBUFFERED line-flushed) bypasses
+        # mitmproxy's `termlog_verbosity=warn` filter set by tv_proxy.rs.
         sys.stderr.write(f"[cascada] {msg}\n")
 
 
@@ -584,10 +1163,9 @@ def configure(updates) -> None:  # mitmproxy: options changed
 
 
 def running() -> None:  # mitmproxy: addon started
-    # Always start the heartbeat loop — it idles until configure() (manual
-    # or auto-discovered) populates broker_url + account_id, then begins
-    # polling /state every 5s and refreshing /instruments every 5min.
-    def _loop():
+    # Heartbeat + TV-broker /state poll. Idles until configure() seeds
+    # broker_url + account_id; PaperTrading short-circuits inside fetch_state.
+    def _state_loop():
         last_inst = 0.0
         while True:
             try:
@@ -600,7 +1178,57 @@ def running() -> None:  # mitmproxy: addon started
             except Exception:
                 pass
             time.sleep(5)
-    threading.Thread(target=_loop, name="cascada-state-poll", daemon=True).start()
+    threading.Thread(target=_state_loop, name="cascada-state-poll", daemon=True).start()
+
+    # Tail cmd.jsonl for `subscribe` commands so the slave can ask us
+    # which symbols it wants Quote streams for. The file path moves
+    # when configure() fires (different account → different out_dir),
+    # so we reset offset whenever we observe that swap.
+    def _cmd_loop():
+        path: Path | None = None
+        offset = 0
+        while True:
+            try:
+                if bridge.broker_url and bridge.account_id:
+                    cur = bridge.out_dir / "cmd.jsonl"
+                    if cur != path:
+                        path, offset = cur, 0
+                    if path.exists():
+                        size = path.stat().st_size
+                        if size < offset:
+                            offset = 0
+                        if size > offset:
+                            with path.open("r", encoding="utf-8") as f:
+                                f.seek(offset)
+                                for line in f:
+                                    bridge._handle_cmd(line)
+                            offset = size
+            except Exception:
+                pass
+            time.sleep(0.5)
+    threading.Thread(target=_cmd_loop, name="cascada-cmd-tail", daemon=True).start()
+
+    # Flush the deferred-pending buffer: emit each entry that's been
+    # held >200ms (TV usually fires the fill within milliseconds when
+    # the pending was already past its trigger; survivors are real
+    # pendings worth showing the slave).
+    def _pending_flush_loop():
+        while True:
+            try:
+                cutoff = time.time() - 0.200
+                for oid in list(bridge._pending_buffer):
+                    buf = bridge._pending_buffer.get(oid)
+                    if not buf or buf["ts"] > cutoff:
+                        continue
+                    bridge._emit(buf["data"])
+                    bridge._log(buf["log"])
+                    bridge.pending_paper[oid] = buf["meta"]
+                    bridge._pending_buffer.pop(oid, None)
+            except Exception:
+                pass
+            time.sleep(0.05)
+    threading.Thread(target=_pending_flush_loop,
+                     name="cascada-pending-flush", daemon=True).start()
 
 
 def request(flow):
@@ -609,3 +1237,7 @@ def request(flow):
 
 def response(flow):
     bridge.response(flow)
+
+
+def websocket_message(flow):
+    bridge.on_websocket_message(flow)

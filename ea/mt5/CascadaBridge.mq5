@@ -580,11 +580,23 @@ void DoClose(const string line)
 {
    ulong ticket = (ulong)StringToInteger(JsonField(line, "ticket"));
    double vol   = StringToDouble(JsonField(line, "volume"));
-   if(!PositionSelectByTicket(ticket)) { WriteLog("warn", "close: ticket not found"); return; }
-   bool ok = (vol > 0 && vol < PositionGetDouble(POSITION_VOLUME))
-             ? trade.PositionClosePartial(ticket, vol)
-             : trade.PositionClose(ticket);
-   if(!ok) WriteLog("error", "close failed: " + trade.ResultComment());
+   if(PositionSelectByTicket(ticket))
+   {
+      bool ok = (vol > 0 && vol < PositionGetDouble(POSITION_VOLUME))
+                ? trade.PositionClosePartial(ticket, vol)
+                : trade.PositionClose(ticket);
+      if(!ok) WriteLog("error", "close failed: " + trade.ResultComment());
+      return;
+   }
+   // Race fallback: master closed its position before the slave's
+   // pending filled — cancel the still-pending order instead.
+   if(ord.Select(ticket))
+   {
+      if(!trade.OrderDelete(ticket))
+         WriteLog("error", "close (pending fallback) failed: " + trade.ResultComment());
+      return;
+   }
+   WriteLog("warn", "close: ticket not found");
 }
 
 void DoCloseAll(const string line)
@@ -605,12 +617,29 @@ void DoModify(const string line)
    ulong ticket = (ulong)StringToInteger(JsonField(line, "ticket"));
    double sl = StringToDouble(JsonField(line, "sl"));
    double tp = StringToDouble(JsonField(line, "tp"));
-   if(!PositionSelectByTicket(ticket)) { WriteLog("warn", "modify: ticket not found"); return; }
-   string sym = PositionGetString(POSITION_SYMBOL);
-   double new_sl = (sl > 0) ? NormalizePrice(sym, sl) : PositionGetDouble(POSITION_SL);
-   double new_tp = (tp > 0) ? NormalizePrice(sym, tp) : PositionGetDouble(POSITION_TP);
-   if(!trade.PositionModify(ticket, new_sl, new_tp))
-      WriteLog("error", "modify failed: " + trade.ResultComment());
+   if(PositionSelectByTicket(ticket))
+   {
+      string sym = PositionGetString(POSITION_SYMBOL);
+      double new_sl = (sl > 0) ? NormalizePrice(sym, sl) : PositionGetDouble(POSITION_SL);
+      double new_tp = (tp > 0) ? NormalizePrice(sym, tp) : PositionGetDouble(POSITION_TP);
+      if(!trade.PositionModify(ticket, new_sl, new_tp))
+         WriteLog("error", "modify failed: " + trade.ResultComment());
+      return;
+   }
+   // Race fallback: master's pending may have filled before the slave's
+   // did, so the master sends `modify` (position semantics) for a ticket
+   // that's still a pending on this side. Route it through OrderModify.
+   if(ord.Select(ticket))
+   {
+      string sym = ord.Symbol();
+      double new_sl = (sl > 0) ? NormalizePrice(sym, sl) : ord.StopLoss();
+      double new_tp = (tp > 0) ? NormalizePrice(sym, tp) : ord.TakeProfit();
+      if(!trade.OrderModify(ticket, ord.PriceOpen(), new_sl, new_tp,
+                            (ENUM_ORDER_TYPE_TIME)ord.TypeTime(), ord.TimeExpiration()))
+         WriteLog("error", "modify (pending fallback) failed: " + trade.ResultComment());
+      return;
+   }
+   WriteLog("warn", "modify: ticket not found");
 }
 
 void DoModifyPending(const string line)

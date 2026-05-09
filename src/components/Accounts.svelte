@@ -288,11 +288,11 @@
     dispatch("refresh");
   }
 
-  const platforms: { id: Platform; name: string; tag: string; beta?: boolean }[] = [
+  const platforms: { id: Platform; name: string; tag: string }[] = [
     { id: "cTrader", name: "cTrader", tag: "cBot · auto-discovered" },
     { id: "MT4",     name: "MetaTrader 4", tag: "EA · auto-discovered" },
     { id: "MT5",     name: "MetaTrader 5", tag: "EA · auto-discovered" },
-    { id: "TradingView", name: "TradingView", tag: "Sidecar · auto-discovered", beta: true },
+    { id: "TradingView", name: "TradingView", tag: "Sidecar · auto-discovered" },
   ];
 
   // Surface the "Python 3.10+ not found on PATH" failure as its own panel
@@ -375,7 +375,6 @@
                   on:click={() => { mode = p.id; installStatus = null; }}>
             <div class="plat-badge-row">
               <span class="plat-badge {p.id}">{p.id}</span>
-              {#if p.beta}<span class="plat-beta">BETA</span>{/if}
             </div>
             <span class="plat-name">{p.name}</span>
             <span class="plat-tag">{p.tag}</span>
@@ -391,6 +390,9 @@
             <button on:click={installCtraderBotManual}>Pick location…</button>
           </div>
         {:else if mode === "TradingView"}
+          <div class="tv-warning">
+            <strong>Développement en cours</strong> — à utiliser avec précaution.
+          </div>
           <p class="lead">
             Cascada opens TradingView in an <strong>isolated browser window</strong> with a
             mitmproxy sidecar pre-configured. Your main browser stays untouched, and there's
@@ -695,14 +697,20 @@
   .plat-badge.MT5     { background: #dcfce7; color: #15803d; }
   .plat-badge.TradingView { background: #eff6ff; color: #1d4ed8; }
   .plat-badge-row { display: flex; align-items: center; gap: 6px; }
-  .plat-beta {
-    font-size: 9px; font-weight: 700; letter-spacing: 0.06em;
-    padding: 2px 6px; border-radius: 4px;
-    background: linear-gradient(135deg, #f97316, #f59e0b);
-    color: #fff;
-  }
   .plat-name { font-size: 14px; font-weight: 600; color: var(--text); }
   .plat-tag  { font-size: 11px; color: var(--text-muted); }
+
+  .tv-warning {
+    display: block;
+    margin-bottom: 12px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    background: linear-gradient(135deg, rgba(249, 115, 22, 0.12), rgba(245, 158, 11, 0.12));
+    border-left: 3px solid #f97316;
+    font-size: 13px;
+    color: var(--text);
+  }
+  .tv-warning strong { color: #c2410c; }
 
   .tv-steps {
     margin: 0; padding-left: 22px;
