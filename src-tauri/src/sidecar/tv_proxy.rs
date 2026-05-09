@@ -352,17 +352,24 @@ impl TvProxyManager {
             }
         }
 
-        // pip install — quiet to avoid spamming logs, but keep stderr so
-        // failures (network, SSL, etc) surface via `last_error`.
-        self.log(LogLevel::Info, "tv-proxy: installing mitmproxy + requests…");
-        let pip = cmd(&venv_py)
-            .args(["-m", "pip", "install", "--quiet", "--upgrade",
-                   "pip", "mitmproxy", "requests"])
-            .output().await?;
-        if !pip.status.success() {
-            let err = String::from_utf8_lossy(&pip.stderr).into_owned();
-            self.state.lock().await.last_error = Some(err.clone());
-            return Err(anyhow!("pip install failed: {err}"));
+        // pip install — skipped when mitmdump is already in the venv, so
+        // re-running setup is a no-op for users with a working install
+        // (avoids a PyPI round-trip that can hang on slow networks). To
+        // force a fresh install, the user deletes the venv directory.
+        let mitmdump = mitmdump_path(&venv);
+        if !mitmdump.exists() {
+            self.log(LogLevel::Info, "tv-proxy: installing mitmproxy + requests…");
+            let pip = cmd(&venv_py)
+                .args(["-m", "pip", "install", "--quiet",
+                       "mitmproxy", "requests"])
+                .output().await?;
+            if !pip.status.success() {
+                let err = String::from_utf8_lossy(&pip.stderr).into_owned();
+                self.state.lock().await.last_error = Some(err.clone());
+                return Err(anyhow!("pip install failed: {err}"));
+            }
+        } else {
+            self.log(LogLevel::Info, "tv-proxy: venv already provisioned, skipping pip");
         }
 
         // Write the embedded addon. We always overwrite so a Cascada

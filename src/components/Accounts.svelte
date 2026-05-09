@@ -185,7 +185,7 @@
   async function setupTvProxy() {
     if (tvBusy !== "idle") return;
     tvBusy = "setup";
-    installStatus = { kind: "info", text: "Installing TradingView proxy (Python venv + mitmproxy)…" };
+    installStatus = { kind: "info", text: "Install in progress" };
     try {
       tvStatus = await api.tvProxySetup();
       installStatus = { kind: "ok", text: "Proxy installed. Click Open TradingView to start trading." };
@@ -393,11 +393,6 @@
           <div class="tv-warning">
             <strong>Under active development</strong> — use with caution.
           </div>
-          <p class="lead">
-            Cascada opens TradingView in an <strong>isolated browser window</strong> with a
-            mitmproxy sidecar pre-configured. Your main browser stays untouched, and there's
-            nothing blocking when Cascada is closed.
-          </p>
           <div class="tv-status">
             <span class="tv-pill {tvStatus?.running ? 'on' : tvStatus?.installed ? 'idle' : 'off'}">
               {tvStatus?.running ? `Running on :${tvStatus.port}` : tvStatus?.installed ? "Installed · stopped" : "Not installed"}
@@ -436,14 +431,7 @@
             {#if tvBusy === "setup"}
               <div class="setup-progress">
                 <div class="setup-progress-bar"><div class="setup-progress-fill"></div></div>
-                <span class="muted small">Provisioning Python venv, installing mitmproxy, generating CA cert. ~30 s.</span>
               </div>
-            {:else}
-              <p class="hint">
-                One-time setup (~30 s): Cascada provisions a Python venv and installs
-                <a href="https://mitmproxy.org/" target="_blank" rel="noreferrer">mitmproxy</a>.
-                No system changes.
-              </p>
             {/if}
           {:else if tvStatus && !tvStatus.browserPath}
             <div class="browser-required">
