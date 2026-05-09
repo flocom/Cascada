@@ -391,7 +391,7 @@
           </div>
         {:else if mode === "TradingView"}
           <div class="tv-warning">
-            <strong>Développement en cours</strong> — à utiliser avec précaution.
+            <strong>Under active development</strong> — use with caution.
           </div>
           <p class="lead">
             Cascada opens TradingView in an <strong>isolated browser window</strong> with a
