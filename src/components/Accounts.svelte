@@ -17,6 +17,17 @@
   let dragOver: string | null = null;   // master id being hovered
   const dragEnterCount = new Map<string, number>();
 
+  // Per-account "connecting" state for inline connect buttons (TV proxy
+  // open). Drives the disabled state + spinner so users can't double-click.
+  let connectingId: string | null = null;
+  async function connectTradingView(a: Account) {
+    if (connectingId) return;
+    connectingId = a.id;
+    try { await api.tvProxyOpenBrowser(); }
+    catch (e) { console.warn("[tv-connect] failed:", e); }
+    finally { connectingId = null; }
+  }
+
   function onDragStart(e: DragEvent, id: string) {
     dragId = id;
     e.dataTransfer?.setData("text/plain", id);
@@ -239,6 +250,13 @@
             <span class="num">{m.balance.toFixed(2)} <span class="muted">{m.currency}</span></span>
             <span class="num subtle">{m.equity.toFixed(2)}</span>
             <div class="row-actions">
+              {#if m.platform === "TradingView" && !m.connected}
+                <button class="primary sm" on:click={() => connectTradingView(m)}
+                        disabled={connectingId === m.id}
+                        title="Open the TradingView proxy + browser">
+                  {connectingId === m.id ? "Connecting…" : "Connect"}
+                </button>
+              {/if}
               <button class="ghost" title="Demote to unassigned" on:click={() => demoteToIdle(m)}>Unassign</button>
               <button class="danger icon" title="Remove" on:click={() => removeAccount(m)}>✕</button>
             </div>
@@ -337,6 +355,13 @@
               <span class="num">{a.balance.toFixed(2)} <span class="muted">{a.currency}</span></span>
               <span class="num subtle">{a.equity.toFixed(2)}</span>
               <div class="row-actions wrap">
+                {#if a.platform === "TradingView" && !a.connected}
+                  <button class="primary sm" on:click={() => connectTradingView(a)}
+                          disabled={connectingId === a.id}
+                          title="Open the TradingView proxy + browser">
+                    {connectingId === a.id ? "Connecting…" : "Connect"}
+                  </button>
+                {/if}
                 {#each masters as m}
                   <button class="candidate" title="Attach as slave to {m.label}" on:click={() => linkSlave(m, a)}>
                     → {m.label}
@@ -550,4 +575,7 @@
     font-size: 12px; cursor: pointer;
   }
   .ghost:hover { background: var(--surface-muted); }
+
+  /* Compact primary button for inline row actions (e.g. TV connect). */
+  .primary.sm { font-size: 12px; padding: 4px 12px; }
 </style>

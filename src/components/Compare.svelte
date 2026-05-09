@@ -12,7 +12,18 @@
 
   let masterId = "";
   let slaveId  = "";
-  type Pair = { master: string; slave: string };
+  // `masterFeed` is the per-row TV data-feed pattern (`OANDA:`,
+  // `*PEPPERSTONE`, …). Empty = bare ticker. The global selector
+  // under the master card pushes its value into every row when
+  // changed — convenient for "compare all on the same feed" — but
+  // each row also keeps its own select so the user can mix feeds
+  // (e.g. OANDA:EURUSD on row 1, ICMARKETS:GBPUSD on row 2).
+  type Pair = { master: string; slave: string; masterFeed?: string };
+
+  // Global TV feed selector. Bound to the dropdown under the master
+  // card; writing to it via the on:change handler also broadcasts
+  // the value to every Pair so existing rows pick it up.
+  let masterFeed = "";
   let pairs: Pair[] = [{ master: "", slave: "" }];
   let quotes = new Map<string, Quote>();   // key = `${accountId}|${SYMBOL}`
   let symbolsByAccount = new Map<string, string[]>();
@@ -47,6 +58,116 @@
 
   $: masterSymbols = symbolsByAccount.get(masterId) ?? [];
   $: slaveSymbols  = symbolsByAccount.get(slaveId)  ?? [];
+  $: masterIsTv = masterAcct?.platform === "TradingView";
+
+  // Data-feed patterns the TV master has pushed. PaperTrading
+  // exposes symbols in two clean shapes — a colon-prefix style
+  // ("OANDA:EURUSD", "BITSTAMP:BTCUSD") and an asterisk-suffix style
+  // ("EURUSD*PEPPERSTONE"). TV occasionally also emits malformed
+  // entries with multiple separators ("CADJPY*PEPPERSTONE:CADCHF/")
+  // or non-tradeable noise ('"SPLITS"', "CA10Y") — strict regex
+  // matches reject those. The dropdown value is the literal pattern
+  // token that gets glued onto a bare ticker when applied: "X:" =
+  // prefix, "*Y" = suffix.
+  // Feed-marker extraction from raw TV symbols. Both forms come up:
+  //   - "EURUSD*PEPPERSTONE"  → suffix style (TV PaperTrading bound brokers)
+  //   - "OANDA:EURUSD"        → prefix style (named exchange feeds)
+  // Some TV qsd frames concatenate junk ("CADJPY*PEPPERSTONE:CADCHF/")
+  // — we still want to pull the broker tag from those, so the regex
+  // anchors at the start but doesn't require `$` at the end.
+  const FEED_SUFFIX = /^[A-Z0-9]+\*([A-Z0-9_]+)/i;
+  const FEED_PREFIX = /^([A-Z0-9_]+):[A-Z0-9_]+/i;
+
+  function symbolFeedPattern(s: string): string | null {
+    if (!s) return null;
+    let m = FEED_SUFFIX.exec(s);
+    if (m) return `*${m[1].toUpperCase()}`;
+    m = FEED_PREFIX.exec(s);
+    if (m) return `${m[1].toUpperCase()}:`;
+    return null;
+  }
+  // Bare ticker extracted from a cached TV symbol (drops any feed
+  // prefix/suffix and any junk after). Returns null for entries we
+  // can't parse cleanly (malformed, non-tradeable, etc.).
+  function bareTicker(s: string): string | null {
+    if (!s) return null;
+    if (FEED_SUFFIX.test(s)) {
+      const star = s.indexOf("*");
+      const head = s.slice(0, star);
+      return /^[A-Z0-9]+$/i.test(head) ? head.toUpperCase() : null;
+    }
+    if (FEED_PREFIX.test(s)) {
+      const colon = s.indexOf(":");
+      const tail = s.slice(colon + 1).match(/^[A-Z0-9_]+/i)?.[0];
+      return tail ? tail.toUpperCase() : null;
+    }
+    if (/^[A-Z0-9_]+$/i.test(s)) return s.toUpperCase();
+    return null;
+  }
+  $: tvFeeds = (() => {
+    const set = new Set<string>();
+    for (const s of masterSymbols) {
+      const p = symbolFeedPattern(s);
+      if (p) set.add(p);
+    }
+    return Array.from(set).sort();
+  })();
+  // Distinct bare tickers for the datalist when master is TV — the
+  // user picks the feed separately, so the autocomplete shouldn't
+  // bury them under prefixed/suffixed variants. For non-TV masters
+  // we fall back to the raw symbol list (cTrader / MT4 / MT5 all
+  // hand back broker-native symbol names).
+  $: masterTickers = masterIsTv
+    ? Array.from(new Set(masterSymbols.map(bareTicker).filter((s): s is string => !!s))).sort()
+    : masterSymbols;
+  // Tickers actually offered by a given feed. When the row selected
+  // a specific data feed, the Symbol autocomplete should only show
+  // symbols that feed actually carries — picking OANDA shouldn't
+  // suggest a Pepperstone-only pair.
+  function tickersForFeed(feed: string): string[] {
+    if (!masterIsTv || !feed) return masterTickers;
+    const out = new Set<string>();
+    if (feed.endsWith(":")) {
+      for (const s of masterSymbols) {
+        if (s.startsWith(feed)) {
+          const bare = s.slice(feed.length).match(/^[A-Z0-9_]+/i)?.[0];
+          if (bare) out.add(bare.toUpperCase());
+        }
+      }
+    } else if (feed.startsWith("*")) {
+      for (const s of masterSymbols) {
+        if (s.endsWith(feed)) {
+          const head = s.slice(0, s.length - feed.length);
+          if (/^[A-Z0-9]+$/i.test(head)) out.add(head.toUpperCase());
+        }
+      }
+    }
+    return Array.from(out).sort();
+  }
+
+  // Build the effective master symbol from a bare ticker + a feed
+  // pattern. Prefix patterns end with ":", suffix patterns start
+  // with "*". An empty bare symbol returns "" — the dedup pass in
+  // applySubscription drops it, otherwise we'd send the feed pattern
+  // alone (e.g. "*PEPPERSTONE") as a phantom subscription.
+  function applyFeed(symbol: string, feed: string): string {
+    if (!symbol) return "";
+    if (!feed) return symbol;
+    if (feed.endsWith(":")) return `${feed}${symbol}`;
+    if (feed.startsWith("*")) return `${symbol}${feed}`;
+    return symbol;
+  }
+  function effectiveMaster(p: Pair): string {
+    if (!masterIsTv) return p.master;
+    return applyFeed(p.master, p.masterFeed ?? masterFeed);
+  }
+  // Apply the global feed value to every row. Called when the user
+  // changes the master-card dropdown — a "set all to this feed" gesture.
+  function setAllFeeds(feed: string) {
+    masterFeed = feed;
+    pairs = pairs.map((p) => ({ ...p, masterFeed: feed }));
+    applySubscription();
+  }
 
   // Memoize the name-based heuristic fallback used when a broker quote hasn't
   // arrived yet (or predates the EA's pip_size plumbing). Covers indices and
@@ -180,7 +301,7 @@
       }
       return out;
     };
-    const ms = dedup(pairs.map((p) => p.master));
+    const ms = dedup(pairs.map((p) => effectiveMaster(p)));
     const ss = dedup(pairs.map((p) => p.slave || p.master));
     await Promise.all([
       api.subscribeSymbols(masterId, ms),
@@ -532,6 +653,30 @@
             <strong>{masterSymbols.length || 0}</strong> symbols
           </button>
         </div>
+        {#if masterIsTv}
+          <div class="feed-row">
+            <label class="feed-label" for="tv-feed-select">Data feed</label>
+            <select id="tv-feed-select" class="feed-select"
+                    title="Apply this data feed to EVERY row at once. Each row also has its own selector to mix feeds."
+                    value={masterFeed}
+                    on:change={(e) => setAllFeeds(e.currentTarget.value)}>
+              <option value="">— bare ticker</option>
+              {#each tvFeeds as f}
+                <option value={f}>
+                  {f.endsWith(":") ? f.slice(0, -1) : f.slice(1)}
+                  &nbsp;
+                  <span class="feed-fmt">{f.endsWith(":") ? "(prefix)" : "(suffix)"}</span>
+                </option>
+              {/each}
+            </select>
+          </div>
+          <div class="tv-hint">
+            TradingView only lists symbols you've opened in a chart or watchlist
+            within the Cascada browser. Pick a data feed above (<code>OANDA</code>,
+            <code>PEPPERSTONE</code>, <code>BITSTAMP</code>, …) and it's applied to
+            every Symbol in the table at once. Empty = no prefix.
+          </div>
+        {/if}
       </div>
 
       <!-- Center action column -->
@@ -540,14 +685,6 @@
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
             <path d="M3 8h14m0 0l-4-4m4 4l-4 4M21 16H7m0 0l4-4m-4 4l4 4"/>
           </svg>
-        </div>
-        <div class="vs-actions">
-          <button class="btn-ghost" title="Stop streaming on both sides and clear quotes" on:click={stop}>
-            ⏸ Stop
-          </button>
-          <button class="btn-link" title="Re-send the subscription if quotes look stuck" on:click={applySubscription}>
-            ↻ Resync
-          </button>
         </div>
       </div>
 
@@ -582,9 +719,6 @@
       </div>
     </div>
 
-    <datalist id="dl-master">
-      {#each masterSymbols as s (s)}<option value={s}></option>{/each}
-    </datalist>
     <datalist id="dl-slave">
       {#each slaveSymbols as s (s)}<option value={s}></option>{/each}
     </datalist>
@@ -615,18 +749,37 @@
         </thead>
         <tbody>
           {#each pairs as p, i (i)}
-            {@const m = getQuote(masterId, p.master)}
+            {@const m = getQuote(masterId, effectiveMaster(p))}
             {@const s = getQuote(slaveId, p.slave || p.master)}
+            {@const rowFeed = p.masterFeed ?? masterFeed}
+            {@const rowTickers = tickersForFeed(rowFeed)}
             {@const d = diffPips(p)}
             {@const samp = sampling.get(i)}
             {@const diffMag = d == null ? 0 : Math.abs(d)}
             {@const diffClass = d == null ? "" : diffMag >= 5 ? "diff-strong" : diffMag >= 1 ? "diff-mid" : "diff-low"}
             <tr>
               <td class="sym mcell">
-                <input class="sym-input" type="text" list="dl-master" placeholder="EURUSD"
-                       bind:value={p.master}
-                       on:input={() => syncSlaveDefault(i)}
-                       on:change={() => { autoFillSlave(i); applySubscription(); }} />
+                <div class="sym-row">
+                  {#if masterIsTv}
+                    <select class="row-feed"
+                            title="Per-row data feed override"
+                            value={rowFeed}
+                            on:change={(e) => { p.masterFeed = e.currentTarget.value; applySubscription(); }}>
+                      <option value="">—</option>
+                      {#each tvFeeds as f}
+                        <option value={f}>{f.endsWith(":") ? f.slice(0, -1) : f.slice(1)}</option>
+                      {/each}
+                    </select>
+                  {/if}
+                  <input class="sym-input" type="text" list={`dl-master-${i}`} placeholder="EURUSD"
+                         autocomplete="off" autocorrect="off" spellcheck="false"
+                         bind:value={p.master}
+                         on:input={() => syncSlaveDefault(i)}
+                         on:change={() => { autoFillSlave(i); applySubscription(); }} />
+                  <datalist id={`dl-master-${i}`}>
+                    {#each rowTickers as s (s)}<option value={s}></option>{/each}
+                  </datalist>
+                </div>
               </td>
               <td class="num mcell">{fmt(m?.bid)}</td>
               <td class="num mcell">{fmt(m?.ask)}</td>
@@ -641,6 +794,7 @@
               </td>
               <td class="sym scell">
                 <input class="sym-input" type="text" list="dl-slave" placeholder="(same as master)"
+                       autocomplete="off" autocorrect="off" spellcheck="false"
                        bind:value={p.slave}
                        on:change={applySubscription} />
               </td>
@@ -862,6 +1016,58 @@
     font-size: 13px; font-weight: 500;
   }
   .acct-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .tv-hint {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: #eff6ff;
+    border-left: 3px solid #3b82f6;
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--text);
+  }
+  .tv-hint code {
+    background: #fff;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 10.5px;
+  }
+  .feed-row {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 8px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    background: #fff;
+    border: 1px solid var(--border);
+  }
+  .feed-label {
+    font-size: 11px; font-weight: 600;
+    color: var(--text-2);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .feed-select {
+    flex: 1;
+    font-size: 12px;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: #fff;
+    color: var(--text);
+  }
+  .feed-select:focus { outline: 1px solid var(--primary); }
+
+  .sym-row { display: flex; align-items: center; gap: 4px; }
+  .row-feed {
+    font-size: 11px;
+    padding: 3px 5px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: #fff;
+    color: var(--text-2);
+    max-width: 110px;
+  }
+  .row-feed:focus { outline: 1px solid var(--primary); }
   .login-chip {
     font-size: 11px; color: var(--text-2);
     background: var(--surface-muted);
@@ -897,36 +1103,6 @@
     opacity: 0.4;
     margin-top: 18px;
   }
-  .vs-actions { display: flex; flex-direction: column; gap: 6px; width: 100px; }
-  .btn-primary, .btn-ghost {
-    padding: 8px 14px;
-    border-radius: var(--radius-sm);
-    font-size: 13px; font-weight: 500;
-    cursor: pointer;
-    border: 1px solid var(--border);
-    transition: filter 0.15s, background 0.15s;
-  }
-  .btn-primary {
-    background: linear-gradient(180deg, var(--primary), color-mix(in srgb, var(--primary) 85%, black));
-    color: #fff; border-color: var(--primary);
-    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-    box-shadow: 0 1px 2px rgba(37,99,235,0.3);
-  }
-  .btn-primary:hover { filter: brightness(1.06); }
-  .btn-primary .dot-tx {
-    width: 6px; height: 6px; border-radius: 50%;
-    background: #fff; opacity: 0.85;
-  }
-  .btn-ghost { background: var(--surface); color: var(--text); }
-  .btn-ghost:hover { background: var(--surface-muted); }
-  .btn-link {
-    background: transparent; border: none;
-    color: var(--text-2); font-size: 11px;
-    padding: 4px 8px; cursor: pointer;
-    text-decoration: none; border-radius: var(--radius-sm);
-    transition: color 0.15s, background 0.15s;
-  }
-  .btn-link:hover { color: var(--primary); background: var(--surface-muted); }
 
   /* ─────────── Table ─────────── */
   .table-wrap {

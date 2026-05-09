@@ -75,6 +75,25 @@
 <div class="tv-warning">
   <strong>Under active development</strong> — use with caution.
 </div>
+<div class="tv-info">
+  <strong>PaperTrading only.</strong> This bridge supports TradingView's PaperTrading account.
+  For a live broker connection (FTMO, OANDA, Forex.com, …), use the <code>cTrader</code>
+  bridge instead — it's more reliable for non-paper accounts.
+</div>
+<div class="tv-info">
+  <strong>PaperTrading is feature-limited.</strong> TV's simulated account behaves differently
+  from a real broker on edge cases (partial closes, instant-fill pendings, netting merges,
+  intermediate SL/TP frames). <em>Run your own functional tests</em> with small trades
+  end-to-end before relying on it. If anything looks off, prefer <code>cTrader</code> or
+  <code>MT4</code>/<code>MT5</code> as the master — those are battle-tested and the bridge
+  semantics are stable.
+</div>
+<div class="tv-info">
+  <strong>Netting → hedging mapping.</strong> TV PaperTrading nets all entries on a symbol
+  into one position; the slave broker (MT4/MT5/cTrader) sees each entry as a <em>separate</em>
+  position. Two successive buys of 1 BTC in TV produce two distinct 1 BTC positions on the
+  slave. SL/TP changes apply to all of them; closing in TV closes them all.
+</div>
 <div class="tv-status">
   <span class="tv-pill {tvStatus?.running ? 'on' : tvStatus?.installed ? 'idle' : 'off'}">
     {tvStatus?.running ? `Running on :${tvStatus.port}` : tvStatus?.installed ? "Installed · stopped" : "Not installed"}
@@ -164,6 +183,24 @@
     color: var(--text);
   }
   .tv-warning strong { color: #c2410c; }
+
+  .tv-info {
+    display: block;
+    margin-bottom: 8px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    background: #eff6ff;
+    border-left: 3px solid #3b82f6;
+    font-size: 12px;
+    color: var(--text);
+    line-height: 1.5;
+  }
+  .tv-info strong { color: #1d4ed8; }
+  .tv-info code {
+    background: #fff; padding: 1px 6px; border-radius: 4px;
+    font-size: 11px;
+  }
+  .tv-info em { color: #1d4ed8; font-style: normal; font-weight: 600; }
 
   .tv-status {
     display: flex; flex-wrap: wrap; align-items: center; gap: 10px;

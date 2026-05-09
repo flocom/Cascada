@@ -478,7 +478,13 @@ fn compute_volume(
             risk_amount / (sl_pips * pip_value)
         }
     };
-    (v * 100.0).round() / 100.0
+    // Round to 4 decimals (0.0001 lot precision). The 2-decimal step
+    // we used to apply was wrong for crypto / indices where brokers
+    // commonly accept smaller fractional sizes — coarsening 0.0217 BTC
+    // into 0.02 lost precision before the slave EA could apply its
+    // broker-specific step. Slave-side NormalizeVolume snaps to the
+    // actual broker step + min/max anyway.
+    (v * 10_000.0).round() / 10_000.0
 }
 
 fn clamp_volume(rule: &CopyRule, v: f64) -> f64 {

@@ -169,8 +169,16 @@ fn cmd<S: AsRef<OsStr>>(program: S) -> Command {
 }
 
 /// Embedded addon — written to disk on every `setup()` so users always
-/// run the addon shipped with the current Cascada build.
-const ADDON_BODY: &str = include_str!("../../../tv-proxy/cascada_addon.py");
+/// run the addon shipped with the current Cascada build. Four files
+/// for maintainability: shared helpers, the entry, REST handlers, WS
+/// handlers. All four need to land in the same directory so the
+/// `from cascada_helpers import …` lines in the mixins resolve.
+const ADDON_FILES: &[(&str, &str)] = &[
+    ("cascada_helpers.py",    include_str!("../../../tv-proxy/cascada_helpers.py")),
+    ("cascada_paper_rest.py", include_str!("../../../tv-proxy/cascada_paper_rest.py")),
+    ("cascada_paper_ws.py",   include_str!("../../../tv-proxy/cascada_paper_ws.py")),
+    ("cascada_addon.py",      include_str!("../../../tv-proxy/cascada_addon.py")),
+];
 
 /// Default listen port. Matches the legacy `setup.sh` / `setup.ps1`, so
 /// users with a pre-configured browser proxy continue to work.
@@ -372,13 +380,20 @@ impl TvProxyManager {
             self.log(LogLevel::Info, "tv-proxy: venv already provisioned, skipping pip");
         }
 
-        // Write the embedded addon. We always overwrite so a Cascada
-        // upgrade picks up addon changes without the user clearing state.
+        // Write the embedded addon files (entry + REST + WS mixins).
+        // Always overwrite so a Cascada upgrade picks up addon changes
+        // without the user clearing state. All three land in the same
+        // directory so the mixins' `from cascada_addon import …`
+        // resolves at mitmdump load time.
         let addon = addon_path();
         if let Some(parent) = addon.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        tokio::fs::write(&addon, ADDON_BODY).await?;
+        let addon_dir = addon.parent()
+            .ok_or_else(|| anyhow!("addon path has no parent: {}", addon.display()))?;
+        for (name, body) in ADDON_FILES {
+            tokio::fs::write(addon_dir.join(name), body).await?;
+        }
         self.log(LogLevel::Info, format!("tv-proxy: addon → {}", addon.display()));
 
         // Bootstrap the CA cert by booting mitmdump on a throwaway port —
@@ -430,7 +445,12 @@ impl TvProxyManager {
             return Err(anyhow!("mitmdump not found at {} — run setup again", mitmdump.display()));
         }
         if !addon.exists() {
-            tokio::fs::write(&addon, ADDON_BODY).await?;
+            let addon_dir = addon.parent()
+                .ok_or_else(|| anyhow!("addon path has no parent: {}", addon.display()))?;
+            tokio::fs::create_dir_all(addon_dir).await?;
+            for (name, body) in ADDON_FILES {
+                tokio::fs::write(addon_dir.join(name), body).await?;
+            }
         }
 
         // Refuse to spawn if the port is already taken — likely a stale
