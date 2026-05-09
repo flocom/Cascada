@@ -559,12 +559,31 @@
 
   onMount(async () => {
     _liveTimer = setInterval(() => { now = Date.now(); }, 500);
+    // rAF batching for quote-driven reactivity. TradingView pushes 50–100
+    // qsd frames/s per feed; reassigning `quotes = quotes` on each one
+    // forced Svelte to re-evaluate every Compare row's reactive bindings,
+    // which on Windows starved the main thread enough that the 250ms
+    // capture timer drifted (visible "stuck at 1s") and navigation clicks
+    // queued behind the tick storm. We still write to the Maps eagerly so
+    // sampling stays accurate, but only flag Svelte for one redraw per
+    // frame at most.
+    let flushQueued = false;
+    const scheduleFlush = () => {
+      if (flushQueued) return;
+      flushQueued = true;
+      requestAnimationFrame(() => {
+        flushQueued = false;
+        quotes = quotes;
+        lastTickAt = lastTickAt;
+      });
+    };
     unlistenQuote = await api.onQuote((q) => {
       quotes.set(key(q.account_id, q.symbol), q);
-      quotes = quotes;
       lastTickAt.set(q.account_id, Date.now());
-      lastTickAt = lastTickAt;
+      scheduleFlush();
       // Feed any active samplers on the rows that this quote affects.
+      // pushSampleIfActive only mutates s.samples (no reactive store
+      // reassignment), so this stays cheap even off the rAF path.
       if (sampling.size === 0) return;
       const sym = q.symbol.toUpperCase();
       const hits = q.account_id === masterId ? masterPairIndex.get(sym)
@@ -852,7 +871,8 @@
                     {:else if matchingRules.length === 1}
                       {@const r0 = matchingRules[0]}
                       {@const sym0 = pairs[i].master.trim().toUpperCase()}
-                      {@const upToDate0 = ruleHasOffset(r0, sym0, Number(samp.medianPips.toFixed(2)))}
+                      {@const feed0 = ((pairs[i].masterFeed ?? masterFeed) || "").toUpperCase()}
+                      {@const upToDate0 = ruleHasOffset(r0, sym0, feed0, Number(samp.medianPips.toFixed(2)))}
                       <button class="cap-apply"
                               disabled={samp.appliedRuleIds.has(r0.id) || upToDate0}
                               title={upToDate0 ? "This rule already carries the same offset for this symbol" : ""}
@@ -865,11 +885,12 @@
                       </button>
                     {:else}
                       {@const sym0 = pairs[i].master.trim().toUpperCase()}
+                      {@const feed0 = ((pairs[i].masterFeed ?? masterFeed) || "").toUpperCase()}
                       {@const pips0 = Number(samp.medianPips.toFixed(2))}
                       <select class="cap-rule" on:change={(e) => { const v = e.currentTarget.value; if (v) applyToRule(i, v); }}>
                         <option value="">Apply to rule…</option>
                         {#each matchingRules as r}
-                          {@const upToDate = ruleHasOffset(r, sym0, pips0)}
+                          {@const upToDate = ruleHasOffset(r, sym0, feed0, pips0)}
                           <option value={r.id} disabled={samp.appliedRuleIds.has(r.id) || upToDate}>
                             {r.name?.trim() || "Untitled"}{samp.appliedRuleIds.has(r.id) ? " ✓" : upToDate ? " (à jour)" : ""}
                           </option>
