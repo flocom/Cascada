@@ -105,6 +105,10 @@ pub enum S2C {
         #[serde(default)] pip_size: f64,
         #[serde(default)] label: String,
         #[serde(default)] comment: String,
+        /// TV data-feed marker (`OANDA:`, `*PEPPERSTONE`, …) preserved
+        /// from the master-side raw symbol. Used by quote_offsets to
+        /// match per-feed drift rules. Empty for non-TV connectors.
+        #[serde(default)] feed: String,
     },
     Close {
         ticket: String, #[serde(default)] profit: f64, ts: i64,
@@ -133,6 +137,7 @@ pub enum S2C {
         #[serde(default)] origin: String,
         #[serde(default)] comment: String,
         #[serde(default)] pip_size: f64,
+        #[serde(default)] feed: String,
     },
     PendingModify {
         ticket: String,
@@ -182,14 +187,14 @@ pub fn dispatch(account: &Account, msg: S2C, events: &mpsc::UnboundedSender<Conn
         S2C::Heartbeat { balance, equity, .. } =>
             { let _ = events.send(ConnectorEvent::Heartbeat {
                 account_id: id.clone(), balance, equity }); },
-        S2C::Open { ticket, symbol, side, volume, price, sl, tp, ts, origin, comment, pip_size, .. } =>
+        S2C::Open { ticket, symbol, side, volume, price, sl, tp, ts, origin, comment, pip_size, feed, .. } =>
             { let _ = events.send(ConnectorEvent::TradeOpened(Trade {
                 ticket, account_id: id.clone(),
                 symbol, side, volume, price,
                 sl: opt(sl), tp: opt(tp),
                 opened_at: ts, closed_at: None, profit: None,
                 origin_ticket: (!origin.is_empty()).then_some(origin),
-                comment, pip_size,
+                comment, pip_size, feed,
             })); },
         S2C::Close { ticket, profit, ts, .. } =>
             { let _ = events.send(ConnectorEvent::TradeClosed {
@@ -202,9 +207,10 @@ pub fn dispatch(account: &Account, msg: S2C, events: &mpsc::UnboundedSender<Conn
                 sl: opt(sl), tp: opt(tp),
                 opened_at: 0, closed_at: None, profit: None,
                 origin_ticket: None, comment: String::new(), pip_size: 0.0,
+                feed: String::new(),
             })); },
         S2C::Pending { ticket, symbol, side, order_type, volume, target, sl, tp,
-                       expiry, origin, comment, pip_size } => {
+                       expiry, origin, comment, pip_size, feed } => {
             let kind = match order_type.as_str() {
                 "Limit"     => PendingType::Limit,
                 "StopLimit" => PendingType::StopLimit,
@@ -215,7 +221,7 @@ pub fn dispatch(account: &Account, msg: S2C, events: &mpsc::UnboundedSender<Conn
                 order_type: kind, volume, target,
                 sl: opt(sl), tp: opt(tp), expiry,
                 origin_ticket: (!origin.is_empty()).then_some(origin),
-                comment, pip_size,
+                comment, pip_size, feed,
             }));
         }
         S2C::PendingModify { ticket, target, sl, tp, expiry, .. } => {
@@ -228,6 +234,7 @@ pub fn dispatch(account: &Account, msg: S2C, events: &mpsc::UnboundedSender<Conn
                 volume: 0.0, target,
                 sl: opt(sl), tp: opt(tp), expiry,
                 origin_ticket: None, comment: String::new(), pip_size: 0.0,
+                feed: String::new(),
             }));
         }
         S2C::PendingCancel { ticket, .. } => {
@@ -249,6 +256,7 @@ pub fn dispatch(account: &Account, msg: S2C, events: &mpsc::UnboundedSender<Conn
                 opened_at, closed_at: Some(closed_at), profit: Some(profit),
                 origin_ticket: (!origin.is_empty()).then_some(origin),
                 comment: String::new(), pip_size: 0.0,
+                feed: String::new(),
             })); },
         S2C::HistoryDone { count } =>
             emit_log(events, id, LogLevel::Info, format!("history snapshot: {count} trades")),

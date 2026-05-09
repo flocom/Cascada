@@ -75,6 +75,9 @@ export interface CopyRule {
 export interface QuoteOffset {
   symbol: string;  // master-side ticker (uppercased)
   pips: number;    // signed pip shift applied to SL/TP
+  /** Optional TV data-feed marker (`OANDA:`, `*PEPPERSTONE`). When set,
+   *  the offset only matches trades from that feed; empty = match any. */
+  feed?: string;
 }
 
 export interface EaStatus {

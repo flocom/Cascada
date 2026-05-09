@@ -80,9 +80,8 @@ impl CopyEngine {
             // 0.0001 by default (and turns a legitimate −0.22-pip offset into
             // an invisible −0.000022 price shift).
             let pip = effective_pip_size(&t);
-            let quote_offset: f64 = rule.quote_offsets.iter()
-                .find(|o| o.symbol.eq_ignore_ascii_case(&t.symbol))
-                .map(|o| o.pips * pip)
+            let quote_offset: f64 = match_quote_offset(&rule.quote_offsets, &t.symbol, &t.feed)
+                .map(|pips| pips * pip)
                 .unwrap_or(0.0);
 
             let (sl, tp) = override_sl_tp(&rule, t, side, quote_offset);
@@ -260,9 +259,8 @@ impl CopyEngine {
             // entry price (unlike a market order where the slave's entry is
             // whatever its broker fills at).
             let pip = effective_pip_size(&as_trade);
-            let quote_offset: f64 = rule.quote_offsets.iter()
-                .find(|o| o.symbol.eq_ignore_ascii_case(&p.symbol))
-                .map(|o| o.pips * pip)
+            let quote_offset: f64 = match_quote_offset(&rule.quote_offsets, &p.symbol, &p.feed)
+                .map(|pips| pips * pip)
                 .unwrap_or(0.0);
             let target = p.target + quote_offset;
             let sl = p.sl.map(|v| v + quote_offset);
@@ -342,7 +340,31 @@ fn pending_as_trade(p: &PendingOrder) -> Trade {
         origin_ticket: p.origin_ticket.clone(),
         comment: p.comment.clone(),
         pip_size: p.pip_size,
+        feed: p.feed.clone(),
     }
+}
+
+/// Pick the quote-offset (in pips) that applies to a given trade.
+///
+/// Matching prefers the most specific entry: an offset whose `feed`
+/// equals the trade's TV data-feed wins over a feedless offset on the
+/// same symbol. The feedless entry is the legacy/cTrader/MT path —
+/// migrating an old config (no `feed` field) keeps working unchanged.
+/// Returns `None` when no row matches.
+fn match_quote_offset(offsets: &[crate::core::model::QuoteOffset],
+                       symbol: &str, feed: &str) -> Option<f64> {
+    let mut fallback: Option<f64> = None;
+    for o in offsets {
+        if !o.symbol.eq_ignore_ascii_case(symbol) { continue; }
+        if !o.feed.is_empty() && !feed.is_empty()
+            && o.feed.eq_ignore_ascii_case(feed) {
+            return Some(o.pips);
+        }
+        if o.feed.is_empty() && fallback.is_none() {
+            fallback = Some(o.pips);
+        }
+    }
+    fallback
 }
 
 fn flip(s: Side) -> Side { if matches!(s, Side::Buy) { Side::Sell } else { Side::Buy } }

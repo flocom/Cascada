@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 480" role="img" aria-label="Per-feed quote-offset compensation">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0B1220"/>
+      <stop offset="100%" stop-color="#0E1A35"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1E293B"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+    <linearGradient id="rowOanda" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#6366F1" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#6366F1" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="rowIc" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#10B981" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#10B981" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="rowPep" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#F59E0B" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#F59E0B" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="480" fill="url(#bg)"/>
+
+  <!-- Title -->
+  <g font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, sans-serif">
+    <text x="40" y="48" fill="#F8FAFC" font-size="28" font-weight="700">Per-feed quote-offset compensation</text>
+    <text x="40" y="76" fill="#94A3B8" font-size="15">EURUSD on OANDA quotes differently from EURUSD on IC Markets. Cascada keeps a separate drift value for each feed —</text>
+    <text x="40" y="96" fill="#94A3B8" font-size="15">your SL/TP lands on the right slave price no matter which TradingView feed the master streamed.</text>
+  </g>
+
+  <!-- Rule editor card -->
+  <g transform="translate(40 140)">
+    <rect width="600" height="290" rx="14" fill="url(#card)" stroke="#334155"/>
+    <text x="22" y="36" fill="#E2E8F0" font-size="16" font-weight="700" font-family="ui-sans-serif, -apple-system">Copy rule · Quote-diff compensation</text>
+    <text x="22" y="58" fill="#64748B" font-size="12" font-family="ui-sans-serif, -apple-system">SYMBOL · FEED · OFFSET</text>
+
+    <!-- Header -->
+    <g transform="translate(22 80)" font-family="ui-sans-serif, -apple-system" font-size="11" fill="#64748B">
+      <text x="0" y="14">SYMBOL</text>
+      <text x="220" y="14">DATA FEED</text>
+      <text x="450" y="14">PIPS</text>
+    </g>
+
+    <!-- Row 1: OANDA -->
+    <g transform="translate(22 100)">
+      <rect width="556" height="48" rx="8" fill="url(#rowOanda)"/>
+      <rect width="556" height="48" rx="8" fill="none" stroke="#1E293B"/>
+      <text x="14" y="30" fill="#E2E8F0" font-weight="700" font-family="ui-sans-serif, -apple-system" font-size="14">EURUSD</text>
+      <g transform="translate(200 12)">
+        <rect width="160" height="24" rx="12" fill="#6366F1" opacity="0.3" stroke="#818CF8"/>
+        <text x="80" y="16" fill="#C7D2FE" text-anchor="middle" font-family="ui-sans-serif, -apple-system" font-size="12" font-weight="600">OANDA:</text>
+      </g>
+      <text x="450" y="30" fill="#FBBF24" font-weight="700" font-family="ui-sans-serif, -apple-system" font-size="14">−0.40</text>
+    </g>
+
+    <!-- Row 2: IC Markets -->
+    <g transform="translate(22 156)">
+      <rect width="556" height="48" rx="8" fill="url(#rowIc)"/>
+      <rect width="556" height="48" rx="8" fill="none" stroke="#1E293B"/>
+      <text x="14" y="30" fill="#E2E8F0" font-weight="700" font-family="ui-sans-serif, -apple-system" font-size="14">EURUSD</text>
+      <g transform="translate(200 12)">
+        <rect width="160" height="24" rx="12" fill="#10B981" opacity="0.3" stroke="#34D399"/>
+        <text x="80" y="16" fill="#A7F3D0" text-anchor="middle" font-family="ui-sans-serif, -apple-system" font-size="12" font-weight="600">ICMARKETS:</text>
+      </g>
+      <text x="450" y="30" fill="#FBBF24" font-weight="700" font-family="ui-sans-serif, -apple-system" font-size="14">+0.10</text>
+    </g>
+
+    <!-- Row 3: Pepperstone (suffix style) -->
+    <g transform="translate(22 212)">
+      <rect width="556" height="48" rx="8" fill="url(#rowPep)"/>
+      <rect width="556" height="48" rx="8" fill="none" stroke="#1E293B"/>
+      <text x="14" y="30" fill="#E2E8F0" font-weight="700" font-family="ui-sans-serif, -apple-system" font-size="14">XAUUSD</text>
+      <g transform="translate(200 12)">
+        <rect width="160" height="24" rx="12" fill="#F59E0B" opacity="0.3" stroke="#FBBF24"/>
+        <text x="80" y="16" fill="#FDE68A" text-anchor="middle" font-family="ui-sans-serif, -apple-system" font-size="12" font-weight="600">*PEPPERSTONE</text>
+      </g>
+      <text x="450" y="30" fill="#FBBF24" font-weight="700" font-family="ui-sans-serif, -apple-system" font-size="14">−1.20</text>
+    </g>
+  </g>
+
+  <!-- Right column: how matching works -->
+  <g transform="translate(680 140)" font-family="ui-sans-serif, -apple-system, Segoe UI">
+    <text x="0" y="32" fill="#E2E8F0" font-size="16" font-weight="700">How matching works</text>
+
+    <g transform="translate(0 56)">
+      <circle cx="14" cy="14" r="14" fill="#6366F1" opacity="0.2" stroke="#818CF8"/>
+      <text x="14" y="19" fill="#C7D2FE" text-anchor="middle" font-size="13" font-weight="700">1</text>
+      <text x="40" y="13" fill="#E2E8F0" font-size="14" font-weight="600">Feed-tagged offset wins</text>
+      <text x="40" y="32" fill="#94A3B8" font-size="12">Trade from <tspan fill="#C7D2FE" font-weight="600">OANDA:EURUSD</tspan> → uses −0.40 pips, ignores IC row.</text>
+    </g>
+
+    <g transform="translate(0 116)">
+      <circle cx="14" cy="14" r="14" fill="#10B981" opacity="0.2" stroke="#34D399"/>
+      <text x="14" y="19" fill="#A7F3D0" text-anchor="middle" font-size="13" font-weight="700">2</text>
+      <text x="40" y="13" fill="#E2E8F0" font-size="14" font-weight="600">Feedless = fallback</text>
+      <text x="40" y="32" fill="#94A3B8" font-size="12">A row with no feed matches any source — keeps cTrader/MT</text>
+      <text x="40" y="49" fill="#94A3B8" font-size="12">setups working unchanged.</text>
+    </g>
+
+    <g transform="translate(0 188)">
+      <circle cx="14" cy="14" r="14" fill="#F59E0B" opacity="0.2" stroke="#FBBF24"/>
+      <text x="14" y="19" fill="#FDE68A" text-anchor="middle" font-size="13" font-weight="700">3</text>
+      <text x="40" y="13" fill="#E2E8F0" font-size="14" font-weight="600">Captured automatically</text>
+      <text x="40" y="32" fill="#94A3B8" font-size="12">Compare tab samples the live pip-delta over 30s, then</text>
+      <text x="40" y="49" fill="#94A3B8" font-size="12">writes the offset back to the rule with one click.</text>
+    </g>
+  </g>
+</svg>

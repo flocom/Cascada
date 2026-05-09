@@ -5,7 +5,7 @@
 <h1 align="center">Cascada</h1>
 
 <p align="center">
-  <strong>Free, local-first copy trading for cTrader, MT4 and MT5 — on your own machine.</strong><br/>
+  <strong>Free, local-first copy trading for cTrader, MT4, MT5 — and now TradingView PaperTrading.</strong><br/>
   <em>No cloud, no subscription, no API keys handed over. One desktop app. Your accounts, your trades, your data.</em>
 </p>
 
@@ -83,7 +83,10 @@ chmod +x Cascada_*.AppImage
 - **cTrader** — drop-in cBot (`CascadaBridge.algo`) installed automatically into your cAlgo folder.
 - **MetaTrader 4** — Expert Advisor (`CascadaBridge.mq4`) with auto-discovery of every MT4 terminal on your machine (Wine, Bottles, CrossOver, PlayOnMac, native installs).
 - **MetaTrader 5** — same story with `CascadaBridge.mq5`.
-- **Multiple masters and slaves in parallel** — mix platforms freely (MT4 master → cTrader slave, etc).
+- **TradingView PaperTrading** ✨ *new* — Cascada launches its own Chrome window with a transparent HTTPS proxy. No extension, no API key, no login handed over. Trades, pendings, SL/TP modifies and live multi-feed quotes are all mirrored to your real broker terminals.
+- **Multiple masters and slaves in parallel** — mix platforms freely (TradingView → MT5, MT4 → cTrader, etc).
+
+<p align="center"><img src="assets/tv-bridge.svg" alt="TradingView bridge architecture" width="100%" /></p>
 
 ### 🎯 Copy-rule engine
 Every master→slave link is a **rule** with fine-grained control:
@@ -91,7 +94,7 @@ Every master→slave link is a **rule** with fine-grained control:
 - **Min / max lot clamp** · per-symbol step normalization.
 - **Direction filter** — all / buy-only / sell-only.
 - **Symbol whitelist / blacklist** · **prefix / suffix mapping** (EURUSD → EURUSDm).
-- **Per-symbol quote-offset** to compensate slave broker quote drift (pips shift on SL/TP).
+- **Per-symbol quote-offset** with **per-feed granularity** ✨ *new* — `OANDA:EURUSD` and `ICMARKETS:EURUSD` can carry different drift values in the same rule, so SL/TP land on the right slave price regardless of which TradingView feed the master streamed.
 - **SL / TP shaping** — copy · ignore · fixed pips.
 - **Max open positions** · **max exposure (lots)** · **max daily loss** caps.
 - **Comment filter** (copy only trades with matching EA / strategy tag).
@@ -104,7 +107,9 @@ Every master→slave link is a **rule** with fine-grained control:
 - **Live KPIs** — total equity, connected accounts, active rules, open positions.
 - **Recent activity stream** with per-trade P/L, master↔slave mirror attribution.
 - **Accounts tree** — drag slaves under masters to link them; color-coded groups per master.
-- **Compare tab** — side-by-side bid/ask and spread for the same symbol across brokers, with pip-distance live.
+- **Compare tab** — side-by-side bid/ask and spread for the same symbol across brokers, with pip-distance live. **Multi-feed selection** ✨ — when the master is TradingView, pick the data feed (OANDA, IC Markets, Pepperstone…) globally or per-row; the symbol autocomplete narrows to tickers that feed actually publishes. One click captures the median pip-delta over 30s and writes it back to a rule as a per-feed offset.
+
+<p align="center"><img src="assets/per-feed-offsets.svg" alt="Per-feed quote-offset compensation" width="100%" /></p>
 - **Trades tab** — virtualised list (handles thousands of trades without lag).
 - **Logs tab** — full connector trace, filterable.
 
@@ -134,12 +139,16 @@ Every master→slave link is a **rule** with fine-grained control:
 ┌─────────────┐   file bridge (JSONL)      ┌──────────────────┐
 │  MT4 / MT5  │──────────────────────────▶ │                  │
 │  Expert     │ ◀──────────────────────────│                  │
-│  Advisor    │   Common/Files/Cascada/    │   Cascada core   │
-└─────────────┘                            │      (Rust)      │──▶ Svelte UI (Tauri 2)
-┌─────────────┐   file bridge (JSONL)      │                  │
-│  cTrader    │──────────────────────────▶ │   copy engine    │
+│  Advisor    │   Common/Files/Cascada/    │                  │
+└─────────────┘                            │                  │
+┌─────────────┐   file bridge (JSONL)      │   Cascada core   │
+│  cTrader    │──────────────────────────▶ │      (Rust)      │──▶ Svelte UI (Tauri 2)
 │  cBot       │ ◀──────────────────────────│                  │
-└─────────────┘   ~/cAlgo/Cascada/…        └────────┬─────────┘
+└─────────────┘   ~/cAlgo/Cascada/…        │   copy engine    │
+┌─────────────┐   HTTPS proxy + WS         │                  │
+│ TradingView │──────────────────────────▶ │                  │
+│  Chrome     │ ◀──────────────────────────│                  │
+└─────────────┘   mitmproxy addon          └────────┬─────────┘
                                                     ▼
                                             local state.json
 ```
@@ -171,6 +180,12 @@ Launch Cascada → **Accounts** tab → **+ Connect platform** → pick cTrader 
 - Click **Auto-install Expert Advisor** — Cascada discovers every MT4/MT5 terminal on your machine (even inside Wine/Bottles/CrossOver/PlayOnMac) and drops `CascadaBridge.mq4` / `.mq5` into each `MQL4/Experts/` (or `MQL5/Experts/`).
 - In MT4/MT5: refresh Navigator → drag `CascadaBridge` onto any chart → enable **AutoTrading**.
 - Account appears in Cascada.
+
+#### TradingView PaperTrading
+- Click **Open TradingView** — Cascada spins up a sandboxed Chrome window proxied through its local addon (first launch downloads mitmproxy + Chromium ~80 MB, cached forever after).
+- Log in to TradingView, switch to a **Paper Trading** account on any chart, and start trading.
+- Cascada auto-discovers the account on the first order and adds it to the Accounts panel — no manual setup, no API keys, no extension.
+- Treat it like any other master: drop slaves under it, build rules, capture per-feed offsets in **Compare**.
 
 ### 3. Link a master to slaves
 - Click **Make master** on one account.
@@ -229,7 +244,10 @@ You need a terminal logged into each account (both masters and slaves). Cascada 
 Any broker supported by cTrader, MT4 or MT5. Symbol suffixes (EURUSD.r, EURUSDm…) are handled via per-rule prefix/suffix mapping.
 
 **What about quote drift between brokers?**
-Per-symbol pip-offset on SL/TP per rule; you can also skip copies if the quote delta is beyond a threshold.
+Per-symbol pip-offset on SL/TP per rule, with **per-feed granularity** when the master is TradingView — keep separate values for `OANDA:EURUSD` and `ICMARKETS:EURUSD` in the same rule. The Compare tab measures the live drift over 30s and writes it back with one click.
+
+**Does the TradingView bridge need an API key or premium subscription?**
+No. Cascada runs a local mitmproxy addon between its own Chrome window and TradingView, observes the PaperTrading order traffic and replays it as wire events. You log in to TradingView yourself; Cascada never sees your password.
 
 **Is it signed?**
 Not yet — first-run warnings are expected, see the [unsigned-build section](#running-an-unsigned-build) above for the 10-second bypass on each OS. Code signing is on the roadmap (requires a paid Apple Developer ID and Windows Authenticode cert).

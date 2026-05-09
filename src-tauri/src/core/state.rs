@@ -316,6 +316,7 @@ impl AppState {
                     sl: None, tp: None,
                     opened_at: ts, closed_at: Some(ts), profit,
                     origin_ticket: None, comment: String::new(), pip_size: 0.0,
+                    feed: String::new(),
                 };
                 self.emit_trade(&t);
                 engine.on_trade_closed(&account_id, &ticket).await;

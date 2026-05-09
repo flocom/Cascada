@@ -51,6 +51,7 @@ from cascada_helpers import (
     PendingMeta,
     cascada_root_default,
     now_ms,
+    split_feed,
     to_side,
     _safe_float,
 )
@@ -130,8 +131,11 @@ class TVBridge(PaperRestMixin, PaperWsMixin):
 
     @staticmethod
     def _strip_exchange(symbol: str) -> str:
-        s = (symbol or "").upper()
-        return s.split(":", 1)[1] if ":" in s else s
+        # Backwards-compat wrapper around split_feed — returns the
+        # bare ticker only. Internals that also need the feed marker
+        # call split_feed directly.
+        bare, _ = split_feed(symbol)
+        return bare
 
     @staticmethod
     def _qty_to_lots(qty: float, symboltype: str) -> float:
@@ -255,6 +259,7 @@ class TVBridge(PaperRestMixin, PaperWsMixin):
             "ts": now_ms(),
             "pip_size": meta.pip_size,
             "comment": meta.comment,
+            "feed": meta.feed,
         })
 
     def _emit_close(self, ticket: str, profit: float) -> None:

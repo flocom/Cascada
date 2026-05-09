@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 460" role="img" aria-label="TradingView bridge architecture">
+  <defs>
+    <linearGradient id="tvBg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0B1220"/>
+      <stop offset="100%" stop-color="#0E1A35"/>
+    </linearGradient>
+    <linearGradient id="boxBlue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1E293B"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+    <linearGradient id="accentTV" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6366F1"/>
+      <stop offset="100%" stop-color="#A855F7"/>
+    </linearGradient>
+    <linearGradient id="accentCascada" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="100%" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <linearGradient id="accentBroker" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#10B981"/>
+      <stop offset="100%" stop-color="#047857"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 6 L0 12 z" fill="#64748B"/>
+    </marker>
+  </defs>
+
+  <rect width="1280" height="460" fill="url(#tvBg)"/>
+
+  <!-- Title -->
+  <g font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, sans-serif">
+    <text x="40" y="48" fill="#F8FAFC" font-size="28" font-weight="700">TradingView bridge</text>
+    <text x="40" y="76" fill="#94A3B8" font-size="15">Cascada launches its own Chrome window with a transparent HTTPS proxy — no extension, no API keys.</text>
+  </g>
+
+  <!-- Box: TradingView (top) -->
+  <g transform="translate(60 130)">
+    <rect width="320" height="180" rx="14" fill="url(#boxBlue)" stroke="#334155"/>
+    <rect width="320" height="6" rx="3" fill="url(#accentTV)"/>
+    <text x="20" y="42" fill="#E0E7FF" font-size="20" font-weight="700" font-family="ui-sans-serif, -apple-system">TradingView</text>
+    <text x="20" y="64" fill="#94A3B8" font-size="13" font-family="ui-sans-serif, -apple-system">PaperTrading account</text>
+    <g font-family="ui-sans-serif, -apple-system" font-size="12" fill="#CBD5E1">
+      <rect x="20" y="84" width="280" height="28" rx="6" fill="#0B1533" stroke="#1E293B"/>
+      <text x="32" y="103">📈  Open / close · pending · SL/TP modify</text>
+      <rect x="20" y="120" width="280" height="28" rx="6" fill="#0B1533" stroke="#1E293B"/>
+      <text x="32" y="139">📡  Live quotes · multi-feed (OANDA, IC, …)</text>
+    </g>
+  </g>
+
+  <!-- Box: Cascada proxy + addon (middle) -->
+  <g transform="translate(480 110)">
+    <rect width="320" height="220" rx="14" fill="url(#boxBlue)" stroke="#334155"/>
+    <rect width="320" height="6" rx="3" fill="url(#accentCascada)"/>
+    <text x="20" y="42" fill="#BAE6FD" font-size="20" font-weight="700" font-family="ui-sans-serif, -apple-system">Cascada</text>
+    <text x="20" y="64" fill="#94A3B8" font-size="13" font-family="ui-sans-serif, -apple-system">mitmproxy addon · Rust core</text>
+    <g font-family="ui-sans-serif, -apple-system" font-size="12" fill="#CBD5E1">
+      <rect x="20" y="84" width="280" height="28" rx="6" fill="#0B1533" stroke="#1E293B"/>
+      <text x="32" y="103">🔍  Auto-discover PaperTrading account</text>
+      <rect x="20" y="120" width="280" height="28" rx="6" fill="#0B1533" stroke="#1E293B"/>
+      <text x="32" y="139">🔄  Translate REST + WS → wire events</text>
+      <rect x="20" y="156" width="280" height="28" rx="6" fill="#0B1533" stroke="#1E293B"/>
+      <text x="32" y="175">⚖️  Run copy rules · sizing · drift offsets</text>
+    </g>
+  </g>
+
+  <!-- Box: Broker terminals (right) -->
+  <g transform="translate(900 130)">
+    <rect width="320" height="180" rx="14" fill="url(#boxBlue)" stroke="#334155"/>
+    <rect width="320" height="6" rx="3" fill="url(#accentBroker)"/>
+    <text x="20" y="42" fill="#A7F3D0" font-size="20" font-weight="700" font-family="ui-sans-serif, -apple-system">Slaves</text>
+    <text x="20" y="64" fill="#94A3B8" font-size="13" font-family="ui-sans-serif, -apple-system">cTrader · MT4 · MT5</text>
+    <g font-family="ui-sans-serif, -apple-system" font-size="12" fill="#CBD5E1">
+      <rect x="20" y="84" width="280" height="28" rx="6" fill="#0B1533" stroke="#1E293B"/>
+      <text x="32" y="103">⚙️  cBot / EA reads cmd.jsonl</text>
+      <rect x="20" y="120" width="280" height="28" rx="6" fill="#0B1533" stroke="#1E293B"/>
+      <text x="32" y="139">💱  Fills order, writes confirmation back</text>
+    </g>
+  </g>
+
+  <!-- Arrows -->
+  <g stroke="#64748B" stroke-width="2" fill="none">
+    <path d="M 380 220 L 480 220" marker-end="url(#arrow)"/>
+    <path d="M 800 220 L 900 220" marker-end="url(#arrow)"/>
+  </g>
+  <g font-family="ui-sans-serif, -apple-system" font-size="11" fill="#94A3B8" text-anchor="middle">
+    <text x="430" y="206">HTTPS proxy</text>
+    <text x="430" y="240">REST + WS</text>
+    <text x="850" y="206">file bridge</text>
+    <text x="850" y="240">JSONL</text>
+  </g>
+
+  <!-- Footer note -->
+  <g font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, sans-serif">
+    <text x="40" y="400" fill="#64748B" font-size="13">No TradingView API key. No browser extension. No cloud relay. Everything runs on your machine.</text>
+    <text x="40" y="422" fill="#64748B" font-size="13">Works with PaperTrading’s simulated balance — perfect for backtesting strategies before going live.</text>
+  </g>
+</svg>

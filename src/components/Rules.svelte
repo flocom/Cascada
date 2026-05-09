@@ -611,6 +611,10 @@
                   <input type="text" class="qo-sym" placeholder="EURUSD"
                          value={o.symbol}
                          on:input={(e) => { editing.quote_offsets[i].symbol = e.currentTarget.value.toUpperCase(); editing.quote_offsets = editing.quote_offsets; }} />
+                  <input type="text" class="qo-feed" placeholder="any feed"
+                         title="Optional TV data feed (e.g. OANDA:, *PEPPERSTONE). Leave blank to match any feed — only relevant when the master is TradingView and you want different drift values per feed."
+                         value={o.feed ?? ""}
+                         on:input={(e) => { editing.quote_offsets[i].feed = e.currentTarget.value.toUpperCase(); editing.quote_offsets = editing.quote_offsets; }} />
                   <div class="input-suffix qo-pips">
                     <input type="number" step="0.1" placeholder="0.0"
                            bind:value={editing.quote_offsets[i].pips} />
@@ -623,7 +627,7 @@
             </div>
           {/if}
           <button type="button" class="ghost mt"
-                  on:click={() => editing.quote_offsets = [...editing.quote_offsets, { symbol: "", pips: 0 }]}>
+                  on:click={() => editing.quote_offsets = [...editing.quote_offsets, { symbol: "", pips: 0, feed: "" }]}>
             + Add symbol offset
           </button>
 
@@ -1029,9 +1033,10 @@
   .form-grid.mt { margin-top: 14px; }
   .mt { margin-top: 10px; }
   .qo-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
-  .qo-row { display: grid; grid-template-columns: minmax(0, 1fr) 130px 32px; gap: 8px; align-items: center; }
+  .qo-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr) 130px 32px; gap: 8px; align-items: center; }
   .qo-row > * { min-width: 0; }
   .qo-sym { text-transform: uppercase; width: 100%; }
+  .qo-feed { text-transform: uppercase; width: 100%; }
   .qo-pips { width: 100%; }
   .qo-pips input { width: 100%; }
   .qo-row .icon-btn { width: 32px; height: 32px; padding: 0; }

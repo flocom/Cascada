@@ -144,6 +144,13 @@ pub struct CopyRule {
 pub struct QuoteOffset {
     pub symbol: String,  // master-side ticker, uppercased
     pub pips: f64,       // signed pip shift applied to SL/TP
+    /// Optional TV data-feed marker (`OANDA:`, `*PEPPERSTONE`, …).
+    /// When set, the offset only matches trades originating from
+    /// that feed — lets a single rule keep separate drift values
+    /// for `OANDA:EURUSD` vs `ICMARKETS:EURUSD`. Empty = match
+    /// any feed (legacy/cTrader/MT behaviour).
+    #[serde(default)]
+    pub feed: String,
 }
 fn default_pip_value() -> f64 { 10.0 }
 
@@ -182,6 +189,10 @@ pub struct Trade {
     /// symbol-name heuristic in that case.
     #[serde(default)]
     pub pip_size: f64,
+    /// TV data-feed marker (e.g. `OANDA:`, `*PEPPERSTONE`) preserved
+    /// from the master-side raw symbol. Empty for non-TV connectors.
+    #[serde(default)]
+    pub feed: String,
 }
 
 /// Kind of pending order — mirrors the master/slave broker's `OP_BUYLIMIT`
@@ -205,6 +216,7 @@ pub struct PendingOrder {
     #[serde(default)] pub origin_ticket: Option<String>,
     #[serde(default)] pub comment: String,
     #[serde(default)] pub pip_size: f64,
+    #[serde(default)] pub feed: String,
 }
 
 /// Normalized event coming from any connector.

@@ -17,6 +17,7 @@ from cascada_helpers import (
     _DISCOVER_PAPER_RE,
     _safe_float,
     now_ms,
+    split_feed,
     to_side,
 )
 
@@ -233,7 +234,7 @@ class PaperRestMixin:
             return {}
 
     def _on_paper_place(self, req: dict[str, Any], resp: dict[str, Any]) -> None:
-        symbol = self._strip_exchange(req.get("symbol", ""))
+        symbol, feed = split_feed(req.get("symbol", ""))
         if not symbol:
             return
         order_id = str((resp or {}).get("id") or "")
@@ -258,6 +259,7 @@ class PaperRestMixin:
             pip_size=self.pip_sizes.get(symbol, 0.0),
             comment=str(req.get("comment") or req.get("note") or ""),
             order_id=order_id,
+            feed=feed,
         )
         self.positions[order_id] = meta
         self.paper_position_by_symbol.setdefault(symbol, []).append(order_id)
@@ -269,7 +271,7 @@ class PaperRestMixin:
         # Netting model: request identifies target by `symbol`, not ticket.
         # close_qty is in raw forex units (TV doesn't echo symboltype on
         # close — assume forex which is the only type where qty != lots).
-        symbol = self._strip_exchange(req.get("symbol", ""))
+        symbol, _feed = split_feed(req.get("symbol", ""))
         tickets = self.paper_position_by_symbol.get(symbol, [])
         if not tickets:
             return
@@ -305,6 +307,7 @@ class PaperRestMixin:
             price=meta.price, sl=meta.sl, tp=meta.tp,
             pip_size=meta.pip_size, comment=meta.comment,
             order_id=new_ticket,
+            feed=meta.feed,
         )
         self.positions[new_ticket] = new_meta
         tickets.append(new_ticket)
@@ -313,7 +316,7 @@ class PaperRestMixin:
                   f"-> remainder {remainder:g} lot ticket={new_ticket}")
 
     def _on_paper_modify(self, req: dict[str, Any], _resp: dict[str, Any]) -> None:
-        symbol = self._strip_exchange(req.get("symbol", ""))
+        symbol, _feed = split_feed(req.get("symbol", ""))
         tickets = self.paper_position_by_symbol.get(symbol, [])
         if not tickets:
             return

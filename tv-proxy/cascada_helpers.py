@@ -94,6 +94,11 @@ class PositionMeta:
     # positionId. We index positions by order_id so SL/TP child
     # deletions resolve.
     order_id: str = ""
+    # Original TV data-feed marker (`OANDA:`, `*PEPPERSTONE`, …)
+    # extracted from the raw symbol before stripping. Travels in
+    # the wire `feed` field so engine-side quote_offsets can match
+    # the source feed and not just the bare ticker.
+    feed: str = ""
 
 
 @dataclass
@@ -108,3 +113,23 @@ class PendingMeta:
     order_type: str = "Limit"
     pip_size: float = 0.0
     comment: str = ""
+    feed: str = ""
+
+
+def split_feed(symbol: str) -> tuple[str, str]:
+    """Return (bare_symbol, feed_marker) extracted from a raw TV
+    symbol. Feed is the literal pattern token that gets glued back
+    onto the bare ticker — `EXCHANGE:` for prefix-style, `*BROKER`
+    for suffix-style, empty string when neither applies. The bare
+    symbol is the slave-friendly ticker (no exchange tag), the feed
+    is metadata for the master-side rule engine."""
+    s = (symbol or "").upper()
+    if not s:
+        return "", ""
+    colon = s.find(":")
+    if colon > 0:
+        return s[colon + 1:], s[:colon] + ":"
+    star = s.find("*")
+    if star > 0:
+        return s[:star], "*" + s[star + 1:]
+    return s, ""

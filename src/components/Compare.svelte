@@ -463,9 +463,12 @@
   /** Does the rule already carry this exact pip value for this symbol? Used to
    * disable the apply button / annotate the dropdown so the user isn't tricked
    * into a useless round-trip. Tolerance = 0.005 pip (we round to .01 anyway). */
-  function ruleHasOffset(r: CopyRule, sym: string, pips: number): boolean {
+  function ruleHasOffset(r: CopyRule, sym: string, feed: string, pips: number): boolean {
     const u = sym.toUpperCase();
-    const cur = r.quote_offsets.find((o) => o.symbol.toUpperCase() === u);
+    const f = (feed || "").toUpperCase();
+    const cur = r.quote_offsets.find(
+      (o) => o.symbol.toUpperCase() === u && (o.feed || "").toUpperCase() === f,
+    );
     return cur != null && Math.abs(cur.pips - pips) < 0.005;
   }
 
@@ -476,19 +479,24 @@
     if (!r) return;
     const sym = pairs[i].master.trim().toUpperCase();
     if (!sym) return;
+    const feed = ((pairs[i].masterFeed ?? masterFeed) || "").toUpperCase();
     const pips = Number(s.medianPips.toFixed(2));
     // Already there with the same value → no-op, but mark as applied so the
     // UI flips to ✓ and the user sees it's effectively done.
-    if (ruleHasOffset(r, sym, pips)) {
+    if (ruleHasOffset(r, sym, feed, pips)) {
       s.appliedRuleIds.add(ruleId);
       sampling = sampling;
       return;
     }
     const next: CopyRule = {
       ...r,
+      // Replace only the (symbol, feed) pair — other feeds for the same
+      // symbol stay so a single rule can carry per-feed drift values.
       quote_offsets: [
-        ...r.quote_offsets.filter((o) => o.symbol.toUpperCase() !== sym),
-        { symbol: sym, pips },
+        ...r.quote_offsets.filter(
+          (o) => !(o.symbol.toUpperCase() === sym && (o.feed || "").toUpperCase() === feed),
+        ),
+        { symbol: sym, pips, feed },
       ],
     };
     try {
@@ -513,7 +521,8 @@
     if (!sym) return;
     const fresh = defaultRule(masterId, slaveId);
     fresh.name = `${sym} ${masterAcct?.platform ?? ""}→${slaveAcct?.platform ?? ""}`.trim();
-    fresh.quote_offsets = [{ symbol: sym, pips: Number(s.medianPips.toFixed(2)) }];
+    const feed = ((pairs[i].masterFeed ?? masterFeed) || "").toUpperCase();
+    fresh.quote_offsets = [{ symbol: sym, pips: Number(s.medianPips.toFixed(2)), feed }];
     try {
       const saved = await api.upsertRule(fresh);
       // Optimistically reflect in local rules list so the badge updates immediately.

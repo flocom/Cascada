@@ -25,6 +25,7 @@ from cascada_helpers import (
     PendingMeta,
     _safe_float,
     now_ms,
+    split_feed,
     to_side,
 )
 
@@ -194,7 +195,7 @@ class PaperWsMixin:
         # PaperTrading is a netting account: the entry order id is
         # reused as the position ticket for the lifetime of the
         # position, so we key tracking off it directly.
-        symbol = self._strip_exchange(p.get("symbol", ""))
+        symbol, feed = split_feed(p.get("symbol", ""))
         if not symbol:
             return
         order_id = str(p.get("id") or "")
@@ -286,6 +287,7 @@ class PaperWsMixin:
                 symbol=symbol, side=side, volume=qty_abs,
                 target=target, sl=sl, tp=tp,
                 order_type=order_kind, pip_size=pip_size,
+                feed=feed,
             )
             event = {
                 "ev": "pending",
@@ -355,6 +357,7 @@ class PaperWsMixin:
                 sl=pmeta.sl, tp=pmeta.tp,
                 pip_size=pmeta.pip_size,
                 order_id=order_id,
+                feed=pmeta.feed or feed,
             )
             self.positions[order_id] = meta
             self.paper_position_by_symbol.setdefault(symbol, []).append(order_id)
@@ -388,6 +391,7 @@ class PaperWsMixin:
                 sl=pending.sl, tp=pending.tp,
                 pip_size=pending.pip_size,
                 order_id=order_id,
+                feed=pending.feed or feed,
             )
             self.positions[order_id] = meta
             self.paper_position_by_symbol.setdefault(symbol, []).append(order_id)
@@ -424,6 +428,7 @@ class PaperWsMixin:
             sl=sl, tp=tp,
             pip_size=pip_size,
             order_id=order_id,
+            feed=feed,
         )
         self.positions[order_id] = meta
         self.paper_position_by_symbol.setdefault(symbol, []).append(order_id)
@@ -443,7 +448,7 @@ class PaperWsMixin:
         # separately. SL/TP modifies are NOT routed here — TV's
         # transient merge frames flood with sl=0 noise; the
         # order_update label="sl"|"tp" child path is authoritative.
-        symbol = self._strip_exchange(p.get("symbol", ""))
+        symbol, feed = split_feed(p.get("symbol", ""))
         if not symbol:
             return
         symboltype = str(p.get("symboltype") or "forex")
@@ -492,6 +497,7 @@ class PaperWsMixin:
                 tp=tp_new if tp_present else 0.0,
                 pip_size=self.pip_sizes.get(symbol, 0.0),
                 order_id=ticket,
+                feed=feed,
             )
             self.positions[ticket] = meta
             self.paper_position_by_symbol.setdefault(symbol, []).append(ticket)
