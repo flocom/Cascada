@@ -154,17 +154,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Per-arch macOS DMGs (replaces the legacy universal build): each
-          # one ships a matching python-build-standalone distribution, so
-          # we can no longer fat-bundle two interpreters into a universal
-          # binary. macos-latest is Apple Silicon, macos-13 is the last
-          # Intel runner GitHub still offers.
+          # Apple Silicon only — the macos-13 (Intel) runner was dropped
+          # because GitHub's Intel runner pool is so constrained that the
+          # job routinely sat in queue for 24h before timing out and
+          # failing the entire release. Users on Intel Macs can still
+          # build from source; we'll restore the matrix entry once
+          # GitHub-hosted Intel availability stabilises.
           - platform: macos-latest
             args: '--target aarch64-apple-darwin'
             python_target: 'aarch64-apple-darwin'
-          - platform: macos-13
-            args: '--target x86_64-apple-darwin'
-            python_target: 'x86_64-apple-darwin'
           - platform: ubuntu-latest
             args: ''
             python_target: 'x86_64-unknown-linux-gnu'
