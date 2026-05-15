@@ -180,18 +180,26 @@
     const s = sym.toUpperCase();
     if (s.includes("JPY")) v = 0.01;
     else if (s.startsWith("XAU") || s.startsWith("XAG")) v = 0.1;
-    else if (/(?:^|\.)(?:US500|SPX500|SPX|US30|DJ30|NAS100|NAS|USTEC|GER40|GER30|DAX|UK100|FTSE|JP225|NIKKEI|FR40|CAC|AUS200|HK50|EU50|STOXX)(?:\.|$)/.test(s)) v = 1.0;
+    else if (/(?:^|\.)(?:US500|SPX500|SPX|SP500|US30|DJ30|WS30|NAS100|NAS|USTEC|NDX|GER40|GER30|DAX|UK100|FTSE|JP225|NIKKEI|FR40|CAC|AUS200|HK50|EU50|STOXX)(?:\.|$)/.test(s)) v = 1.0;
     else if (/^(?:BTC|ETH|XRP|LTC|BCH|ADA|DOT|SOL|DOGE|AVAX|MATIC|LINK)(?:USD|USDT|EUR)?/.test(s)) v = 1.0;
     else v = 0.0001;
     pipHeurCache.set(sym, v);
     return v;
   }
-  /// Prefer the broker-provided pip size riding on each quote — it's the
-  /// authoritative value (maps Digits/Point per-broker). Fall back to the
-  /// name heuristic only while quotes haven't landed yet.
+  /// Pick the trader-facing "pip" size. The heuristic encodes the
+  /// conventional pip (0.0001 forex, 0.01 JPY, 0.1 metals, 1.0 indices
+  /// /crypto); brokers, on the other hand, report their tick size from
+  /// Digits/Point — which for indices is the cent fraction of a point
+  /// (so SP500's 5448.30 ticks at 0.01, and a 6-point gap displays as
+  /// 600 "pips" if we trust the broker). When the heuristic confidently
+  /// recognises an asset class (returns anything other than the 0.0001
+  /// forex default), we use it; otherwise the broker's value is the
+  /// best signal we have.
   function pipOf(sym: string, q?: Quote): number {
+    const h = pipHeuristic(sym);
+    if (h !== 0.0001) return h;
     if (q && q.pip_size && q.pip_size > 0) return q.pip_size;
-    return pipHeuristic(sym);
+    return h;
   }
 
   function key(accountId: string, sym: string) {

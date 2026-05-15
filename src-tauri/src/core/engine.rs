@@ -472,19 +472,49 @@ fn fixed_tp(entry: f64, side: Side, pips: f64, pip: f64) -> Option<f64> {
     Some(match side { Side::Buy => entry + pips * pip, Side::Sell => entry - pips * pip })
 }
 
+/// Trader-facing "pip" size by asset class. Mirrored verbatim in the
+/// `pipHeuristic` table in Compare.svelte — if you add a symbol here,
+/// add it there too or capture-and-apply offsets will be off by 100×.
 fn pip_size(sym: &str) -> f64 {
     // ASCII case-insensitive checks; tickers are ASCII so this skips a heap alloc.
-    if contains_ci(sym, "JPY") { 0.01 }
-    else if starts_with_ci(sym, "XAU") || starts_with_ci(sym, "XAG") { 0.1 }
-    else { 0.0001 }
+    if contains_ci(sym, "JPY") { return 0.01; }
+    if starts_with_ci(sym, "XAU") || starts_with_ci(sym, "XAG") { return 0.1; }
+    for needle in INDEX_KEYWORDS.iter().chain(CRYPTO_KEYWORDS.iter()) {
+        if contains_ci(sym, needle) { return 1.0; }
+    }
+    0.0001
 }
 
-/// Use the broker-reported pip size if the EA shipped it (all EAs from
-/// v0.1.6+ do). Falls back to the heuristic only on trades that predate
-/// the upgrade — covers the JPY/XAU cases; indices/crypto need the real
-/// value to avoid a 100× off offset application.
+const INDEX_KEYWORDS: &[&str] = &[
+    "US500", "SPX500", "SP500", "SPX",
+    "US30", "DJ30", "WS30",
+    "NAS100", "USTEC", "NDX",
+    "GER40", "GER30", "DAX",
+    "UK100", "FTSE",
+    "JP225", "NIKKEI",
+    "FR40", "CAC",
+    "AUS200", "HK50", "EU50", "STOXX",
+];
+
+const CRYPTO_KEYWORDS: &[&str] = &[
+    "BTC", "ETH", "XRP", "LTC", "BCH", "ADA",
+    "DOT", "SOL", "DOGE", "AVAX", "MATIC", "LINK",
+];
+
+/// Pick the trader-facing pip. The heuristic encodes the conventional
+/// pip for each asset class (0.0001 forex, 0.01 JPY, 0.1 metals,
+/// 1.0 indices/crypto). The broker's reported `pip_size` is just
+/// Digits/Point — for indices that's a fraction-of-a-point, finer than
+/// the trader pip, which would make a captured "6 pip" offset apply
+/// as a 0.06 price shift instead of 6.00. So when the heuristic
+/// recognises a non-forex class, we use it; we fall back to the
+/// broker's value only when the heuristic returns the forex default
+/// (which is itself usually right for forex but at least anchored on
+/// a real tick for unrecognised symbols).
 fn effective_pip_size(t: &Trade) -> f64 {
-    if t.pip_size > 0.0 { t.pip_size } else { pip_size(&t.symbol) }
+    let heuristic = pip_size(&t.symbol);
+    if heuristic != 0.0001 { return heuristic; }
+    if t.pip_size > 0.0 { t.pip_size } else { heuristic }
 }
 
 fn starts_with_ci(s: &str, prefix: &str) -> bool {
