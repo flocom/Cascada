@@ -261,17 +261,21 @@
       while (emptyCursor < next.length && next[emptyCursor].master.trim()) emptyCursor++;
       return emptyCursor < next.length ? emptyCursor : -1;
     };
+    const r = activeRule;
     for (const sym of list) {
-      const u = sym.trim().toUpperCase();
-      if (!u || existing.has(u)) continue;
-      existing.add(u);
-      const slave = bestSlaveMatch(u) || u;
+      const canonical = sym.trim().toUpperCase();
+      if (!canonical) continue;
+      const master = decorateMaster(canonical, r);
+      const k = master.toUpperCase();
+      if (existing.has(k)) continue;
+      existing.add(k);
+      const slave = bestSlaveMatch(canonical) || canonical;
       const idx = firstEmpty();
       if (idx >= 0) {
-        next[idx] = { master: u, slave };
+        next[idx] = { master, slave };
         emptyCursor = idx + 1;
       } else {
-        next.push({ master: u, slave });
+        next.push({ master, slave });
       }
     }
     pairs = next;
@@ -342,7 +346,14 @@
   // Auto-suggest a slave equivalent: exact match, then case-insensitive,
   // then the same name with the slave's typical prefix/suffix stripped.
   function bestSlaveMatch(masterSym: string): string {
-    const u = masterSym.trim().toUpperCase();
+    const r = activeRule;
+    // Pull broker decoration off first so a row carrying the actual master
+    // ticker ("EURUSDm") still resolves the slave via the rule's map +
+    // prefix/suffix. No-op when the rule has empty strip fields.
+    const canonical = canonicalizeMaster(masterSym.trim(), r);
+    const decorated = ruleSlaveTicker(canonical, r);
+    if (decorated != null) return decorated;
+    const u = canonical.toUpperCase();
     if (!u || slaveSymbols.length === 0) return masterSym;
     if (slaveSymbols.includes(u)) return u;
     const ci = slaveSymbols.find((s) => s.toUpperCase() === u);
@@ -428,6 +439,46 @@
   }
 
   $: matchingRules = rules.filter((r) => r.master_id === masterId && r.slave_id === slaveId);
+  // Representative rule used to decorate preset symbols on both sides
+  // (master strip-reversal, slave prefix/suffix/map). First enabled wins;
+  // we fall back to the first matching rule so users mid-edit aren't left
+  // without decoration just because they toggled the rule off.
+  $: activeRule = matchingRules.find((r) => r.enabled) ?? matchingRules[0];
+
+  // Reverse the engine's master_strip_* — when we have a canonical ticker
+  // like "EURUSD" and the broker uses "EURUSDm", stitch the decoration
+  // back on so the row's master field carries the actual broker symbol.
+  function decorateMaster(canonical: string, r: CopyRule | undefined): string {
+    if (!r) return canonical;
+    return `${r.master_strip_prefix}${canonical}${r.master_strip_suffix}`;
+  }
+  // Strip broker decoration off a master ticker (mirrors translate_symbol
+  // in engine.rs). Used by bestSlaveMatch so autofill works even when the
+  // row already carries the broker-decorated form.
+  function canonicalizeMaster(brokerSym: string, r: CopyRule | undefined): string {
+    if (!r) return brokerSym;
+    let t = brokerSym;
+    const p = r.master_strip_prefix;
+    const s = r.master_strip_suffix;
+    if (p && t.toLowerCase().startsWith(p.toLowerCase())) t = t.slice(p.length);
+    if (s && t.toLowerCase().endsWith(s.toLowerCase())) t = t.slice(0, t.length - s.length);
+    return t;
+  }
+  // Translate a canonical master ticker into the slave broker's symbol via
+  // the rule's symbol_map (case-insensitive) + symbol_prefix/symbol_suffix.
+  // Returns null when the rule carries no slave-side decoration — the
+  // caller falls back to the symbol-list heuristic in that case.
+  function ruleSlaveTicker(canonical: string, r: CopyRule | undefined): string | null {
+    if (!r) return null;
+    const mapSize = Object.keys(r.symbol_map).length;
+    if (!r.symbol_prefix && !r.symbol_suffix && mapSize === 0) return null;
+    let base = canonical;
+    const u = canonical.toUpperCase();
+    for (const [k, v] of Object.entries(r.symbol_map)) {
+      if (k === canonical || k.toUpperCase() === u) { base = v; break; }
+    }
+    return `${r.symbol_prefix}${base}${r.symbol_suffix}`;
+  }
   // How many rows would a "Capture all" click actually fire on — filled
   // master symbol AND not already sampling. Drives both the button's label
   // and whether it's rendered at all. Single O(n) pass over `pairs`.
