@@ -446,18 +446,31 @@
               <p class="f-help">Trades matching any of these are skipped.</p>
             </div>
             <div class="field">
-              <label class="f-label" for="prefix">Symbol prefix</label>
-              <input id="prefix" type="text" placeholder="(none)" bind:value={editing.symbol_prefix} />
+              <label class="f-label" for="strip-prefix">Master strip prefix</label>
+              <input id="strip-prefix" type="text" placeholder="(none)" bind:value={editing.master_strip_prefix} />
+              <p class="f-help">Removed from the master ticker first (case-insensitive).</p>
             </div>
             <div class="field">
-              <label class="f-label" for="suffix">Symbol suffix</label>
+              <label class="f-label" for="strip-suffix">Master strip suffix</label>
+              <input id="strip-suffix" type="text" placeholder="m" bind:value={editing.master_strip_suffix} />
+              <p class="f-help">Removed from the master ticker first (case-insensitive).</p>
+            </div>
+            <div class="field">
+              <label class="f-label" for="prefix">Slave prefix</label>
+              <input id="prefix" type="text" placeholder="(none)" bind:value={editing.symbol_prefix} />
+              <p class="f-help">Prepended to the resulting slave ticker.</p>
+            </div>
+            <div class="field">
+              <label class="f-label" for="suffix">Slave suffix</label>
               <input id="suffix" type="text" placeholder=".r" bind:value={editing.symbol_suffix} />
+              <p class="f-help">Appended to the resulting slave ticker.</p>
             </div>
           </div>
           <div class="hint-box">
             <span class="hint-icon">→</span>
             <span>
-              Master <code>EURUSD</code> → slave
+              Master <code>{editing.master_strip_prefix || ""}EURUSD{editing.master_strip_suffix || ""}</code>
+              → slave
               <code>{editing.symbol_prefix || ""}EURUSD{editing.symbol_suffix || ""}</code>
               (exact mappings below take precedence).
             </span>

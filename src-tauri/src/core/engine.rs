@@ -391,17 +391,39 @@ fn contains_ci(haystack: &str, needle: &str) -> bool {
 }
 
 fn translate_symbol(rule: &CopyRule, master_sym: &str) -> String {
+    // Strip broker-side decorations off the master ticker first so the rest
+    // of the pipeline sees a canonical name. Mirrors the slave prefix/suffix
+    // but in reverse: "EURUSDm" + strip_suffix "m" → "EURUSD".
+    let stripped = strip_master(master_sym, &rule.master_strip_prefix, &rule.master_strip_suffix);
     // Prefer an exact-case HashMap hit (O(1)), fall back to a case-insensitive
     // scan so a master ticker like `XAUUSDb` (broker suffix in lowercase)
     // still matches a user-entered override of `XAUUSDB` (or any other case).
     // The fallback is only walked when the exact lookup misses, so there's
     // no perf regression for the common path.
-    let base = rule.symbol_map.get(master_sym).cloned()
+    let base = rule.symbol_map.get(stripped.as_str()).cloned()
         .or_else(|| rule.symbol_map.iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case(master_sym))
+            .find(|(k, _)| k.eq_ignore_ascii_case(&stripped))
             .map(|(_, v)| v.clone()))
-        .unwrap_or_else(|| master_sym.to_string());
+        .unwrap_or(stripped);
     format!("{}{base}{}", rule.symbol_prefix, rule.symbol_suffix)
+}
+
+fn strip_master(s: &str, prefix: &str, suffix: &str) -> String {
+    let mut t: &str = s;
+    if !prefix.is_empty() && starts_with_ci(t, prefix) {
+        t = &t[prefix.len()..];
+    }
+    if !suffix.is_empty() && ends_with_ci(t, suffix) {
+        t = &t[..t.len() - suffix.len()];
+    }
+    t.to_string()
+}
+
+fn ends_with_ci(s: &str, suffix: &str) -> bool {
+    let s = s.as_bytes();
+    let suf = suffix.as_bytes();
+    s.len() >= suf.len()
+        && s[s.len() - suf.len()..].iter().zip(suf).all(|(a, b)| a.eq_ignore_ascii_case(b))
 }
 
 fn in_window(s: &Schedule) -> bool {

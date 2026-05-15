@@ -104,6 +104,12 @@ pub struct CopyRule {
     #[serde(default)] pub symbol_blacklist: Vec<String>,
     #[serde(default)] pub symbol_prefix: String,
     #[serde(default)] pub symbol_suffix: String,
+    /// Stripped from the master ticker *before* lookup in `symbol_map` and
+    /// before the slave prefix/suffix are reapplied. Lets a user normalise
+    /// brokers that decorate every symbol (e.g. "EURUSDm" → "EURUSD").
+    /// Case-insensitive match.
+    #[serde(default)] pub master_strip_prefix: String,
+    #[serde(default)] pub master_strip_suffix: String,
 
     // Behaviour filters
     #[serde(default)] pub direction: DirectionFilter,

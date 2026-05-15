@@ -47,6 +47,8 @@ export interface CopyRule {
   symbol_blacklist: string[];
   symbol_prefix: string;
   symbol_suffix: string;
+  master_strip_prefix: string;
+  master_strip_suffix: string;
 
   direction: DirectionFilter;
   comment_filter: string;
@@ -132,6 +134,7 @@ export function defaultRule(master_id = "", slave_id = ""): CopyRule {
     min_lot: 0, max_lot: 0,
     symbol_whitelist: [], symbol_blacklist: [],
     symbol_prefix: "", symbol_suffix: "",
+    master_strip_prefix: "", master_strip_suffix: "",
     direction: "All",
     comment_filter: "",
     max_open_positions: 0, max_exposure_lots: 0, max_daily_loss: 0,
