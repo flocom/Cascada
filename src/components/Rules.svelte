@@ -429,6 +429,14 @@
             </div>
           </div>
 
+          <label class="check-row mt">
+            <input type="checkbox" bind:checked={editing.close_on_master_close} />
+            <span class="check-text">
+              <strong>Close on master close</strong>
+              <span class="muted">Mirror master closes and pending cancels onto the slave. Disable to let the slave manage its own exits.</span>
+            </span>
+          </label>
+
           <h4 class="sub-section">Symbol matching</h4>
           <div class="form-grid">
             <div class="field full">

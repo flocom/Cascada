@@ -52,6 +52,7 @@ export interface CopyRule {
 
   direction: DirectionFilter;
   comment_filter: string;
+  close_on_master_close: boolean;
 
   max_open_positions: number;
   max_exposure_lots: number;
@@ -137,6 +138,7 @@ export function defaultRule(master_id = "", slave_id = ""): CopyRule {
     master_strip_prefix: "", master_strip_suffix: "",
     direction: "All",
     comment_filter: "",
+    close_on_master_close: true,
     max_open_positions: 0, max_exposure_lots: 0, max_daily_loss: 0,
     sl_mode: "Copy", sl_pips: 0,
     tp_mode: "Copy", tp_pips: 0,

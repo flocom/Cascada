@@ -114,6 +114,10 @@ pub struct CopyRule {
     // Behaviour filters
     #[serde(default)] pub direction: DirectionFilter,
     #[serde(default)] pub comment_filter: String,   // substring match, "" = off
+    /// Mirror master closes / pending cancels onto the slave. Default true
+    /// preserves the historical behaviour; flip to false to let the slave
+    /// keep running its position once the master is out.
+    #[serde(default = "default_true")] pub close_on_master_close: bool,
 
     // Risk caps
     #[serde(default)] pub max_open_positions: u32,  // 0 = unlimited
@@ -159,6 +163,7 @@ pub struct QuoteOffset {
     pub feed: String,
 }
 fn default_pip_value() -> f64 { 10.0 }
+fn default_true() -> bool { true }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Quote {

@@ -95,6 +95,7 @@ impl CopyEngine {
             self.state.ticket_map.mark_pending(
                 &rule.slave_id, &t.ticket,
                 MasterKey { account_id: t.account_id.clone(), ticket: t.ticket.clone() },
+                rule.id.clone(),
             );
 
             // Fire the per-rule dispatch on its own task so `trade_delay_ms`
@@ -188,7 +189,20 @@ impl CopyEngine {
     pub async fn on_trade_closed(&self, account_id: &str, ticket: &str) {
         let key = MasterKey { account_id: account_id.to_string(), ticket: ticket.to_string() };
         let slaves = self.state.ticket_map.slaves_for(&key);
+        // Snapshot the rules' close toggles once so we don't hold the read
+        // guard across the awaits below.
+        let close_flags: HashMap<String, bool> = self.state.rules.read().iter()
+            .map(|r| (r.id.clone(), r.close_on_master_close))
+            .collect();
         for s in &slaves {
+            // Default true keeps the historical behaviour for slaves whose
+            // originating rule has been deleted (rule_id won't resolve).
+            let should_close = close_flags.get(&s.rule_id).copied().unwrap_or(true);
+            if !should_close {
+                self.state.emit_log(LogLevel::Info, &s.account_id,
+                    "master closed but rule has close_on_master_close=false — leaving slave open");
+                continue;
+            }
             if let Some(h) = self.state.connector_handle(&s.account_id) {
                 let _ = h.send(ConnectorCmd::Close { ticket: s.ticket.clone() }).await;
             }
@@ -275,6 +289,7 @@ impl CopyEngine {
             self.state.ticket_map.mark_pending(
                 &rule.slave_id, &p.ticket,
                 MasterKey { account_id: p.account_id.clone(), ticket: p.ticket.clone() },
+                rule.id.clone(),
             );
 
             let state = self.state.clone();
@@ -313,7 +328,16 @@ impl CopyEngine {
 
     pub async fn on_pending_cancelled(&self, account_id: &str, ticket: &str) {
         let key = MasterKey { account_id: account_id.to_string(), ticket: ticket.to_string() };
+        let close_flags: HashMap<String, bool> = self.state.rules.read().iter()
+            .map(|r| (r.id.clone(), r.close_on_master_close))
+            .collect();
         for s in self.state.ticket_map.slaves_for(&key) {
+            let should_cancel = close_flags.get(&s.rule_id).copied().unwrap_or(true);
+            if !should_cancel {
+                self.state.emit_log(LogLevel::Info, &s.account_id,
+                    "master cancelled pending but rule has close_on_master_close=false — leaving slave pending");
+                continue;
+            }
             if let Some(h) = self.state.connector_handle(&s.account_id) {
                 let _ = h.send(ConnectorCmd::CancelPending { ticket: s.ticket.clone() }).await;
             }

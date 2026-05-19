@@ -21,32 +21,37 @@ pub struct MasterKey {
 pub struct SlaveRef {
     pub account_id: String,
     pub ticket: String,
+    /// ID of the CopyRule that produced this slave order. Lets close /
+    /// cancel handlers honour per-rule toggles (e.g. `close_on_master_close`)
+    /// even when multiple rules sit on the same master/slave pair.
+    #[serde(default)]
+    pub rule_id: String,
 }
 
 #[derive(Default)]
 pub struct TicketMap {
     by_master: DashMap<MasterKey, Vec<SlaveRef>>,
-    pending: DashMap<(String, String), (MasterKey, Instant)>,
+    pending: DashMap<(String, String), (MasterKey, String /* rule_id */, Instant)>,
     gc_tick: AtomicU32,
 }
 
 impl TicketMap {
     pub fn new() -> Self { Self::default() }
 
-    pub fn mark_pending(&self, slave_account: &str, origin_ticket: &str, master: MasterKey) {
+    pub fn mark_pending(&self, slave_account: &str, origin_ticket: &str, master: MasterKey, rule_id: String) {
         // Amortised GC: only sweep once every PENDING_GC_EVERY inserts.
         if self.gc_tick.fetch_add(1, Ordering::Relaxed) % PENDING_GC_EVERY == 0 {
             self.gc_pending();
         }
         self.pending.insert(
             (slave_account.to_string(), origin_ticket.to_string()),
-            (master, Instant::now()),
+            (master, rule_id, Instant::now()),
         );
     }
 
     fn gc_pending(&self) {
         let now = Instant::now();
-        self.pending.retain(|_, (_, ts)| now.duration_since(*ts) < PENDING_TTL);
+        self.pending.retain(|_, (_, _, ts)| now.duration_since(*ts) < PENDING_TTL);
     }
 
     pub fn resolve_slave_open(
@@ -56,13 +61,14 @@ impl TicketMap {
         slave_ticket: &str,
     ) -> bool {
         let key = (slave_account.to_string(), origin_ticket.to_string());
-        if let Some((_, (master, _))) = self.pending.remove(&key) {
+        if let Some((_, (master, rule_id, _))) = self.pending.remove(&key) {
             self.by_master
                 .entry(master)
                 .or_default()
                 .push(SlaveRef {
                     account_id: slave_account.to_string(),
                     ticket: slave_ticket.to_string(),
+                    rule_id,
                 });
             true
         } else {
