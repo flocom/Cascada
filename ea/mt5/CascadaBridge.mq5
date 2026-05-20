@@ -5,7 +5,7 @@
 //| No network, no whitelist — drop the EA on a chart and it works.   |
 //+------------------------------------------------------------------+
 #property copyright "Cascada"
-#property version   "1.00"
+#property version   "1.01"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -26,6 +26,13 @@ CTrade        trade;
 CPositionInfo pos;
 COrderInfo    ord;
 string        g_subs[];          // active quote-stream subscription (uppercased symbols)
+
+// Pending orders we've already announced, with their last-known levels.
+// Diffed every timer tick (SyncPendings) so a removed pending always emits
+// a cancel even when MT5's ORDER_DELETE callback loses it, and a modify only
+// fires on a real change (never a no-op the slave rejects with "No changes").
+struct PendingRec { ulong ticket; double target; double sl; double tp; double volume; };
+PendingRec    g_pendings[];
 
 const int FFLAGS_RW  = FILE_READ|FILE_WRITE|FILE_BIN|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE;
 const int FFLAGS_W   = FILE_WRITE|FILE_BIN|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE;
@@ -76,6 +83,7 @@ void OnDeinit(const int reason)
 void OnTimer()
 {
    PumpCommands();
+   SyncPendings();
    PushHeartbeat();
    PushQuotes();
 }
@@ -118,45 +126,35 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
 
       case TRADE_TRANSACTION_ORDER_ADD:
          if(ord.Select(trans.order) && IsPendingType((ENUM_ORDER_TYPE)ord.OrderType()))
+         {
             WritePending("pending", trans.order);
+            PendTrack(trans.order);
+         }
          break;
 
       case TRADE_TRANSACTION_ORDER_UPDATE:
-      {
-         // Deleting / expiring / rejecting a pending order surfaces here as an
-         // ORDER_UPDATE carrying the terminal order_state — and on some brokers
-         // WITHOUT a usable ORDER_DELETE (its HistoryOrderSelect can fail before
-         // the trade history is synced, silently dropping the signal). Read the
-         // state straight off the transaction and emit the cancel so it always
-         // reaches the slave. Previously every UPDATE was blindly mirrored as a
-         // modify, so deleting a master pending sent the slave a no-op "modify"
-         // (broker replies "No changes") and the slave order was never removed.
-         if(IsPendingType(trans.order_type) &&
-            (trans.order_state == ORDER_STATE_CANCELED ||
-             trans.order_state == ORDER_STATE_REJECTED ||
-             trans.order_state == ORDER_STATE_EXPIRED))
+         // Mirror a modify ONLY when target/sl/tp/volume actually changed.
+         // Deleting a pending also surfaces here as an UPDATE carrying the same
+         // (unchanged) levels — emitting on every update is what made the slave
+         // receive a no-op "modify" ("No changes") instead of the cancel. The
+         // actual removal is propagated by the SyncPendings() vanish sweep.
+         if(ord.Select(trans.order) && IsPendingType((ENUM_ORDER_TYPE)ord.OrderType()))
          {
-            WritePendingEnd("pending_cancel", trans.order);
-            break;
+            if(PendFind(trans.order) < 0)
+            { WritePending("pending", trans.order); PendTrack(trans.order); }
+            else if(PendChanged(trans.order))
+            { WritePending("pending_modify", trans.order); PendTrack(trans.order); }
          }
-         // Genuine modify: mirror only while the order is still live & working.
-         // A fill leaves it non-selectable (DEAL_ADD / ORDER_DELETE handle that),
-         // and the ORDER_STATE_PLACED guard stops a not-yet-removed cancelled
-         // order from masquerading as a modify.
-         if(ord.Select(trans.order)
-            && IsPendingType((ENUM_ORDER_TYPE)ord.OrderType())
-            && ord.State() == ORDER_STATE_PLACED)
-            WritePending("pending_modify", trans.order);
          break;
-      }
 
       case TRADE_TRANSACTION_ORDER_DELETE:
       {
+         // Fast path for fills (keeps pending_fill ordered ahead of the
+         // resulting position open). HistoryOrderSelect can momentarily fail
+         // here before the history syncs — that is exactly how a deleted
+         // pending used to vanish with no cancel. When it fails we leave the
+         // order tracked so the SyncPendings() sweep recovers the cancel.
          if(!HistoryOrderSelect(trans.order)) break;
-         // MT5 fires ORDER_DELETE for every order leaving the active list,
-         // including filled market orders. Only pending types produce the
-         // pending_fill / pending_cancel signals the backend expects —
-         // skip the rest so market fills don't masquerade as pendings.
          ENUM_ORDER_TYPE otype = (ENUM_ORDER_TYPE)HistoryOrderGetInteger(trans.order, ORDER_TYPE);
          if(!IsPendingType(otype)) break;
          bool filled = (ENUM_ORDER_STATE)HistoryOrderGetInteger(trans.order, ORDER_STATE) == ORDER_STATE_FILLED;
@@ -169,8 +167,98 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
          {
             WritePendingEnd("pending_cancel", trans.order);
          }
+         PendUntrack(trans.order);
          break;
       }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Pending-order tracking + vanish sweep
+//|
+//| MT5's OnTradeTransaction is the fast path, but its ORDER_DELETE can
+//| fire before the order is queryable from history — when that happens
+//| a deleted master pending leaves no cancel and the slave order stays
+//| live forever. SyncPendings() runs every timer tick and diffs the live
+//| order list against what we last tracked: any tracked pending that is
+//| gone and didn't fill is a cancel. (Fills keep the synchronous
+//| ORDER_DELETE path so pending_fill stays ordered before the position
+//| open — see the v0.1.13 duplicate-order fix.)
+//+------------------------------------------------------------------+
+int PendFind(ulong ticket)
+{
+   for(int i = 0; i < ArraySize(g_pendings); i++)
+      if(g_pendings[i].ticket == ticket) return i;
+   return -1;
+}
+
+void PendTrack(ulong ticket)
+{
+   if(!ord.Select(ticket)) return;
+   int idx = PendFind(ticket);
+   if(idx < 0) { idx = ArraySize(g_pendings); ArrayResize(g_pendings, idx + 1); }
+   g_pendings[idx].ticket = ticket;
+   g_pendings[idx].target = ord.PriceOpen();
+   g_pendings[idx].sl     = ord.StopLoss();
+   g_pendings[idx].tp     = ord.TakeProfit();
+   g_pendings[idx].volume = ord.VolumeInitial();
+}
+
+void PendRemoveAt(int idx)
+{
+   int n = ArraySize(g_pendings);
+   if(idx < 0 || idx >= n) return;
+   for(int k = idx; k < n - 1; k++) g_pendings[k] = g_pendings[k + 1];
+   ArrayResize(g_pendings, n - 1);
+}
+
+void PendUntrack(ulong ticket)
+{
+   int idx = PendFind(ticket);
+   if(idx >= 0) PendRemoveAt(idx);
+}
+
+// True when the live order's levels differ from what we last announced.
+bool PendChanged(ulong ticket)
+{
+   int idx = PendFind(ticket);
+   if(idx < 0) return true;
+   if(!ord.Select(ticket)) return false;
+   return g_pendings[idx].target != ord.PriceOpen()
+       || g_pendings[idx].sl     != ord.StopLoss()
+       || g_pendings[idx].tp     != ord.TakeProfit()
+       || g_pendings[idx].volume != ord.VolumeInitial();
+}
+
+void SyncPendings()
+{
+   int total = OrdersTotal();
+   ulong live[];
+   ArrayResize(live, total);
+   int n_live = 0;
+   for(int i = 0; i < total; i++)
+   {
+      ulong t = OrderGetTicket(i);
+      if(t == 0 || !ord.Select(t)) continue;
+      if(!IsPendingType((ENUM_ORDER_TYPE)ord.OrderType())) continue;
+      live[n_live++] = t;
+      // Register pendings we haven't seen yet (e.g. opened before attach, or a
+      // missed ORDER_ADD) so their later removal is detectable. No "pending"
+      // event here — SnapshotAll / ORDER_ADD already announce new pendings.
+      if(PendFind(t) < 0) PendTrack(t);
+   }
+   for(int i = ArraySize(g_pendings) - 1; i >= 0; i--)
+   {
+      ulong t = g_pendings[i].ticket;
+      bool still = false;
+      for(int j = 0; j < n_live; j++) if(live[j] == t) { still = true; break; }
+      if(still) continue;
+      // Gone from the book. A fill was already emitted by ORDER_DELETE; only
+      // recover cancels here (history is reliably synced by timer time).
+      bool filled = HistoryOrderSelect(t)
+                    && (ENUM_ORDER_STATE)HistoryOrderGetInteger(t, ORDER_STATE) == ORDER_STATE_FILLED;
+      if(!filled) WritePendingEnd("pending_cancel", t);
+      PendRemoveAt(i);
    }
 }
 
