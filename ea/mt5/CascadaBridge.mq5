@@ -117,11 +117,38 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
          break;
 
       case TRADE_TRANSACTION_ORDER_ADD:
-      case TRADE_TRANSACTION_ORDER_UPDATE:
          if(ord.Select(trans.order) && IsPendingType((ENUM_ORDER_TYPE)ord.OrderType()))
-            WritePending(trans.type == TRADE_TRANSACTION_ORDER_ADD ? "pending" : "pending_modify",
-                         trans.order);
+            WritePending("pending", trans.order);
          break;
+
+      case TRADE_TRANSACTION_ORDER_UPDATE:
+      {
+         // Deleting / expiring / rejecting a pending order surfaces here as an
+         // ORDER_UPDATE carrying the terminal order_state — and on some brokers
+         // WITHOUT a usable ORDER_DELETE (its HistoryOrderSelect can fail before
+         // the trade history is synced, silently dropping the signal). Read the
+         // state straight off the transaction and emit the cancel so it always
+         // reaches the slave. Previously every UPDATE was blindly mirrored as a
+         // modify, so deleting a master pending sent the slave a no-op "modify"
+         // (broker replies "No changes") and the slave order was never removed.
+         if(IsPendingType(trans.order_type) &&
+            (trans.order_state == ORDER_STATE_CANCELED ||
+             trans.order_state == ORDER_STATE_REJECTED ||
+             trans.order_state == ORDER_STATE_EXPIRED))
+         {
+            WritePendingEnd("pending_cancel", trans.order);
+            break;
+         }
+         // Genuine modify: mirror only while the order is still live & working.
+         // A fill leaves it non-selectable (DEAL_ADD / ORDER_DELETE handle that),
+         // and the ORDER_STATE_PLACED guard stops a not-yet-removed cancelled
+         // order from masquerading as a modify.
+         if(ord.Select(trans.order)
+            && IsPendingType((ENUM_ORDER_TYPE)ord.OrderType())
+            && ord.State() == ORDER_STATE_PLACED)
+            WritePending("pending_modify", trans.order);
+         break;
+      }
 
       case TRADE_TRANSACTION_ORDER_DELETE:
       {
