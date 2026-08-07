@@ -315,7 +315,7 @@ impl AppState {
                     symbol: String::new(), side: Side::Buy, volume: 0.0, price: 0.0,
                     sl: None, tp: None,
                     opened_at: ts, closed_at: Some(ts), profit,
-                    origin_ticket: None, comment: String::new(), pip_size: 0.0,
+                    origin_ticket: None, comment: String::new(), magic: 0, pip_size: 0.0,
                     feed: String::new(),
                 };
                 self.emit_trade(&t);

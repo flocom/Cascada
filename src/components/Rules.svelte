@@ -143,9 +143,15 @@
     if (r.max_slippage_pips)   out.push({ kind: "info", text: `slip ≤ ${r.max_slippage_pips}p` });
     if (r.min_lot)             out.push({ kind: "info", text: `min ${r.min_lot} lot` });
     if (r.max_lot)             out.push({ kind: "info", text: `max ${r.max_lot} lot` });
+    if (r.master_min_lot || r.master_max_lot) {
+      const lo = r.master_min_lot ? `${r.master_min_lot}` : "0";
+      const hi = r.master_max_lot ? `${r.master_max_lot}` : "∞";
+      out.push({ kind: "warn", text: `master lot ${lo}–${hi}` });
+    }
     const offN = r.quote_offsets?.length ?? 0;
     if (offN)                  out.push({ kind: "info", text: `offset · ${offN}` });
     if (r.comment_filter)      out.push({ kind: "info", text: `cmt “${r.comment_filter}”` });
+    if (r.magic_filter?.trim()) out.push({ kind: "info", text: `magic ${r.magic_filter.trim()}` });
     if (r.skip_older_than_secs)out.push({ kind: "info", text: `skip >${r.skip_older_than_secs}s` });
     if (r.max_open_positions) out.push({ kind: "info", text: `≤ ${r.max_open_positions} pos` });
     if (r.max_exposure_lots)  out.push({ kind: "info", text: `≤ ${r.max_exposure_lots} lots` });
@@ -171,6 +177,16 @@
   })();
   $: chipsByRule = new Map([...ruleMeta.map].map(([k, v]) => [k, v.chips]));
   $: issuesCount = ruleMeta.issues;
+
+  /** True when the filter carries at least one allow entry (i.e. it restricts
+   *  rather than merely blocking). Mirrors `magic_allowed` in engine.rs:
+   *  a list of nothing but `!` entries lets every other magic through. */
+  function magicFilterRestricts(filter: string): boolean {
+    return filter
+      .split(",")
+      .map((s) => s.trim())
+      .some((s) => s !== "" && !s.startsWith("!") && /^-?\d+\s*(-\s*-?\d+)?$/.test(s));
+  }
 
   const TABS: { id: TabId; label: string; icon: string; desc: string }[] = [
     { id: "lot",      label: "Lot sizing",    icon: "⚖", desc: "How slave volume is computed" },
@@ -398,6 +414,14 @@
               <p class="f-help">0 = no cap.</p>
             </div>
           </div>
+          <div class="hint-box">
+            <span class="hint-icon">ℹ</span>
+            <span>
+              These clamp the <strong>slave's</strong> volume — an out-of-range trade is still
+              copied, just resized. To <strong>ignore</strong> master signals whose lot is outside a
+              band, use the <strong>Master lot gate</strong> in the <em>Filters</em> tab.
+            </span>
+          </div>
 
           <label class="check-row mt">
             <input type="checkbox" bind:checked={editing.reverse} />
@@ -427,9 +451,75 @@
               <input id="comment" type="text" placeholder="e.g. Scalper#1" bind:value={editing.comment_filter} />
               <p class="f-help">Case-insensitive substring match. Empty = no filter.</p>
             </div>
+            <div class="field full">
+              <label class="f-label" for="magic">Magic number filter</label>
+              <input id="magic" type="text" placeholder="e.g. 12345, 200-299, !777"
+                     bind:value={editing.magic_filter} />
+              <p class="f-help">
+                Comma-separated. <code>12345</code> allows one EA, <code>200-299</code> a range
+                (EAs that derive magic per symbol), <code>!777</code> blocks one. Empty = no filter.
+              </p>
+            </div>
           </div>
+          {#if magicFilterRestricts(editing.magic_filter ?? "") && (platformOf(idx, editing.master_id) === "cTrader" || platformOf(idx, editing.master_id) === "TradingView")}
+            <div class="hint-box warn">
+              <span class="hint-icon">⚠</span>
+              <span>
+                This master is <strong>{platformOf(idx, editing.master_id)}</strong>, which has no
+                magic-number concept — every trade reports <code>0</code>. This allow-list will
+                block <strong>everything</strong> unless you add <code>0</code> to it. Use the
+                comment filter instead.
+              </span>
+            </div>
+          {:else}
+            <div class="hint-box">
+              <span class="hint-icon">ℹ</span>
+              <span>
+                Magic numbers are the reliable way to split strategies when several EAs
+                trade the same master terminal — broker-rewritten comments are not.
+                Manual trades carry magic <code>0</code>; cTrader and TradingView masters
+                have no magic and always report <code>0</code>, so an allow-list on those
+                matches nothing unless it includes <code>0</code>.
+              </span>
+            </div>
+          {/if}
 
-          <label class="check-row mt">
+          <h4 class="sub-section">Master lot gate</h4>
+          <p class="section-sub">
+            Ignore master signals whose lot size falls outside this band. The trade is dropped
+            before it reaches the copy engine — unlike the min/max lot clamp in
+            <em>Lot sizing</em>, which resizes the slave order instead.
+          </p>
+          <div class="form-grid mt">
+            <div class="field">
+              <label class="f-label" for="m-min-lot">Ignore if master lot &lt;</label>
+              <div class="input-suffix">
+                <input id="m-min-lot" type="number" step="0.01" min="0" bind:value={editing.master_min_lot} />
+                <span class="suffix">lots</span>
+              </div>
+              <p class="f-help">0 = no lower gate.</p>
+            </div>
+            <div class="field">
+              <label class="f-label" for="m-max-lot">Ignore if master lot &gt;</label>
+              <div class="input-suffix">
+                <input id="m-max-lot" type="number" step="0.01" min="0" bind:value={editing.master_max_lot} />
+                <span class="suffix">lots</span>
+              </div>
+              <p class="f-help">0 = no upper gate.</p>
+            </div>
+          </div>
+          {#if editing.master_min_lot > 0 && editing.master_max_lot > 0 && editing.master_min_lot > editing.master_max_lot}
+            <div class="hint-box warn">
+              <span class="hint-icon">⚠</span>
+              <span>
+                The lower gate is above the upper gate — no master lot can satisfy both,
+                so this rule will copy nothing.
+              </span>
+            </div>
+          {/if}
+
+          <h4 class="sub-section">Master exits</h4>
+          <label class="check-row">
             <input type="checkbox" bind:checked={editing.close_on_master_close} />
             <span class="check-text">
               <strong>Close on master close</strong>
