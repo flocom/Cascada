@@ -92,12 +92,14 @@ chmod +x Cascada_*.AppImage
 Every master→slave link is a **rule** with fine-grained control:
 - **Lot sizing** — Fixed · Multiplier · Equity-ratio · Balance-ratio · Risk % (SL-based).
 - **Min / max lot clamp** · per-symbol step normalization.
+- **Master lot gate** ✨ *new* — *ignore* master signals whose lot sits outside a band (e.g. drop anything `< 0.03` or `> 0.5`) instead of resizing them like the min/max clamp does. The signal is dropped before it enters the copy engine.
 - **Direction filter** — all / buy-only / sell-only.
 - **Symbol whitelist / blacklist** · **prefix / suffix mapping** (EURUSD → EURUSDm).
 - **Per-symbol quote-offset** with **per-feed granularity** ✨ *new* — `OANDA:EURUSD` and `ICMARKETS:EURUSD` can carry different drift values in the same rule, so SL/TP land on the right slave price regardless of which TradingView feed the master streamed.
 - **SL / TP shaping** — copy · ignore · fixed pips.
 - **Max open positions** · **max exposure (lots)** · **max daily loss** caps.
 - **Comment filter** (copy only trades with matching EA / strategy tag).
+- **Magic-number filter** ✨ *new* — the reliable way to split strategies when several EAs trade the same master terminal, where comments are often blank or rewritten by the broker. Comma-separated: `12345` allows one EA, `200-299` a whole range (EAs that derive their magic per symbol), `!777` blocks one. MT4/MT5 only — cTrader and TradingView have no magic concept and always report `0`.
 - **Skip trades older than N seconds** (catch-up protection on reconnect).
 - **Schedule window** — broker-time session start/end, weekends skip.
 - **Per-rule trade delay** (jitter dispatch across slaves).

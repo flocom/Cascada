@@ -3,6 +3,7 @@ use crate::core::model::*;
 use crate::core::state::AppState;
 use crate::core::ticket_map::MasterKey;
 use chrono::{Datelike, Timelike, Utc};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -137,50 +138,68 @@ impl CopyEngine {
         c
     }
 
-    /// Returns Err(reason) if the trade should be filtered out.
-    fn preflight(&self, rule: &CopyRule, t: &Trade, caps: Option<&SlaveCaps>) -> Result<(), &'static str> {
+    /// Returns Err(reason) if the trade should be filtered out. `Cow` so the
+    /// checks that can name the offending value (magic, master lot) do, while
+    /// the rest stay allocation-free — the reason lands in the user-facing
+    /// skip log, and "magic filter" alone doesn't tell anyone what to fix.
+    fn preflight(&self, rule: &CopyRule, t: &Trade, caps: Option<&SlaveCaps>) -> Result<(), Cow<'static, str>> {
         // Direction filter
         match rule.direction {
             DirectionFilter::All => {}
-            DirectionFilter::BuyOnly  if t.side != Side::Buy  => return Err("direction filter"),
-            DirectionFilter::SellOnly if t.side != Side::Sell => return Err("direction filter"),
+            DirectionFilter::BuyOnly  if t.side != Side::Buy  => return Err("direction filter".into()),
+            DirectionFilter::SellOnly if t.side != Side::Sell => return Err("direction filter".into()),
             _ => {}
         }
         // Symbol whitelist (any match) / blacklist (any match)
         if !rule.symbol_whitelist.is_empty()
             && !rule.symbol_whitelist.iter().any(|s| sym_matches(s, &t.symbol)) {
-            return Err("not in whitelist");
+            return Err("not in whitelist".into());
         }
         if rule.symbol_blacklist.iter().any(|s| sym_matches(s, &t.symbol)) {
-            return Err("blacklisted symbol");
+            return Err("blacklisted symbol".into());
         }
         // Comment substring filter (case-insensitive, ASCII fast path —
         // broker comments are ASCII in practice).
         if !rule.comment_filter.is_empty() && !contains_ci(&t.comment, &rule.comment_filter) {
-            return Err("comment filter");
+            return Err("comment filter".into());
+        }
+        // EA magic-number filter — separates strategies sharing one terminal.
+        if !magic_allowed(&rule.magic_filter, t.magic) {
+            return Err(format!("magic {} not in filter “{}”", t.magic, rule.magic_filter).into());
+        }
+        // Master-lot gate: drop the signal outright when the *master's* lot
+        // sits outside the accepted band. Distinct from min_lot/max_lot,
+        // which resize the slave's volume instead of rejecting the trade.
+        // LOT_EPS keeps the band inclusive despite the 2-decimal rounding the
+        // EAs apply on the wire — a 0.03 master lot must pass a "≥ 0.03" gate.
+        if rule.master_min_lot > 0.0 && t.volume < rule.master_min_lot - LOT_EPS {
+            return Err(format!("master lot {} below gate {}", t.volume, rule.master_min_lot).into());
+        }
+        if rule.master_max_lot > 0.0 && t.volume > rule.master_max_lot + LOT_EPS {
+            return Err(format!("master lot {} above gate {}", t.volume, rule.master_max_lot).into());
         }
         // Skip stale trades
         if rule.skip_older_than_secs > 0 {
             let now_ms = chrono::Utc::now().timestamp_millis();
             if (now_ms - t.opened_at) / 1000 > rule.skip_older_than_secs {
-                return Err("trade too old");
+                return Err("trade too old".into());
             }
         }
         // Schedule
         if rule.schedule.enabled && !in_window(&rule.schedule) {
-            return Err("outside schedule");
+            return Err("outside schedule".into());
         }
         // Open-positions / exposure / daily-loss: caps are pre-computed
         // once per slave by the caller and shared across rules.
         if let Some(c) = caps {
             if rule.max_open_positions > 0 && c.open_count >= rule.max_open_positions {
-                return Err("max open positions");
+                return Err("max open positions".into());
             }
             if rule.max_exposure_lots > 0.0 && c.exposure >= rule.max_exposure_lots {
-                return Err("max exposure");
+                return Err("max exposure".into());
             }
             if rule.max_daily_loss > 0.0 && -c.net_today >= rule.max_daily_loss {
-                return Err("daily loss cap");
+                return Err("daily loss cap".into());
             }
         }
         Ok(())
@@ -363,6 +382,7 @@ fn pending_as_trade(p: &PendingOrder) -> Trade {
         profit: None,
         origin_ticket: p.origin_ticket.clone(),
         comment: p.comment.clone(),
+        magic: p.magic,
         pip_size: p.pip_size,
         feed: p.feed.clone(),
     }
@@ -389,6 +409,57 @@ fn match_quote_offset(offsets: &[crate::core::model::QuoteOffset],
         }
     }
     fallback
+}
+
+/// Tolerance for the master-lot gate — wider than any f64 rounding error,
+/// far narrower than the smallest lot step any broker accepts.
+const LOT_EPS: f64 = 1e-9;
+
+/// Evaluate a rule's `magic_filter` against a trade's magic number.
+///
+/// The filter is a comma-separated list of `N`, `A-B` (inclusive range), or
+/// either form prefixed with `!` to block. A block match wins outright;
+/// otherwise the magic must hit one of the allow entries, unless the filter
+/// carries no allow entries at all (block-only list) in which case anything
+/// unblocked passes. An empty or fully unparseable filter is "off".
+///
+/// Unparseable entries are ignored rather than treated as a match, so a typo
+/// narrows the filter instead of silently disabling it — except when *every*
+/// entry is junk, which reads as no filter at all.
+fn magic_allowed(filter: &str, magic: i64) -> bool {
+    if filter.trim().is_empty() { return true; }
+    let mut has_allow = false;
+    let mut allowed = false;
+    for raw in filter.split(',') {
+        let entry = raw.trim();
+        if entry.is_empty() { continue; }
+        let (deny, body) = match entry.strip_prefix('!') {
+            Some(rest) => (true, rest.trim()),
+            None => (false, entry),
+        };
+        let Some(hit) = magic_entry_matches(body, magic) else { continue };
+        if deny {
+            if hit { return false; }
+        } else {
+            has_allow = true;
+            allowed |= hit;
+        }
+    }
+    !has_allow || allowed
+}
+
+/// `None` when the entry doesn't parse; `Some(hit)` otherwise. The range form
+/// tolerates a reversed pair (`199-100`) by ordering the bounds.
+fn magic_entry_matches(body: &str, magic: i64) -> Option<bool> {
+    // Split on the range dash, skipping a leading '-' so negative magics
+    // (rare but legal) still parse as a single value.
+    if let Some(dash) = body.char_indices().skip(1).find(|(_, c)| *c == '-').map(|(i, _)| i) {
+        let lo: i64 = body[..dash].trim().parse().ok()?;
+        let hi: i64 = body[dash + 1..].trim().parse().ok()?;
+        let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
+        return Some(magic >= lo && magic <= hi);
+    }
+    Some(body.trim().parse::<i64>().ok()? == magic)
 }
 
 fn flip(s: Side) -> Side { if matches!(s, Side::Buy) { Side::Sell } else { Side::Buy } }
@@ -590,4 +661,137 @@ fn clamp_volume(rule: &CopyRule, v: f64) -> f64 {
     if rule.min_lot > 0.0 && v < rule.min_lot { v = rule.min_lot; }
     if rule.max_lot > 0.0 && v > rule.max_lot { v = rule.max_lot; }
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_filter_is_off() {
+        for f in ["", "   ", ",", " , "] {
+            assert!(magic_allowed(f, 0), "{f:?} should pass magic 0");
+            assert!(magic_allowed(f, 12345), "{f:?} should pass magic 12345");
+        }
+    }
+
+    #[test]
+    fn single_allow_matches_only_that_magic() {
+        assert!(magic_allowed("12345", 12345));
+        assert!(!magic_allowed("12345", 12346));
+        // Manual trades (magic 0) are excluded by any allow-list that omits 0.
+        assert!(!magic_allowed("12345", 0));
+        assert!(magic_allowed("0", 0));
+    }
+
+    #[test]
+    fn allow_list_accepts_any_listed_magic() {
+        let f = "111, 222 ,333";
+        for m in [111, 222, 333] { assert!(magic_allowed(f, m), "magic {m}"); }
+        for m in [0, 110, 334] { assert!(!magic_allowed(f, m), "magic {m}"); }
+    }
+
+    #[test]
+    fn ranges_are_inclusive_and_order_insensitive() {
+        assert!(magic_allowed("100-199", 100));
+        assert!(magic_allowed("100-199", 150));
+        assert!(magic_allowed("100-199", 199));
+        assert!(!magic_allowed("100-199", 99));
+        assert!(!magic_allowed("100-199", 200));
+        // A reversed pair is read as the same band rather than matching nothing.
+        assert!(magic_allowed("199-100", 150));
+    }
+
+    #[test]
+    fn block_entries_win_over_allows() {
+        assert!(!magic_allowed("100-199, !150", 150));
+        assert!(magic_allowed("100-199, !150", 151));
+        assert!(!magic_allowed("!100-199", 150));
+        // Order within the filter doesn't matter — a block always wins.
+        assert!(!magic_allowed("!150, 100-199", 150));
+    }
+
+    #[test]
+    fn block_only_filter_passes_everything_else() {
+        assert!(!magic_allowed("!777", 777));
+        assert!(magic_allowed("!777", 0));
+        assert!(magic_allowed("!777", 778));
+        assert!(magic_allowed(" ! 777 ", 778));
+        assert!(!magic_allowed(" ! 777 ", 777));
+    }
+
+    #[test]
+    fn negative_magics_parse_as_values_not_ranges() {
+        assert!(magic_allowed("-5", -5));
+        assert!(!magic_allowed("-5", 5));
+        assert!(magic_allowed("-10--5", -7));
+        assert!(!magic_allowed("-10--5", -11));
+    }
+
+    #[test]
+    fn junk_entries_narrow_rather_than_disable() {
+        // A typo'd entry is ignored; the valid allow entry still constrains.
+        assert!(magic_allowed("abc, 123", 123));
+        assert!(!magic_allowed("abc, 123", 999));
+        // A filter of nothing but junk carries no allow entries, so it's a no-op
+        // rather than a rule that silently copies nothing.
+        assert!(magic_allowed("abc", 999));
+        assert!(magic_allowed("1-2-3", 999));
+    }
+
+    fn gate_rule(min: f64, max: f64) -> CopyRule {
+        let mut r: CopyRule = serde_json::from_str(
+            r#"{"id":"r","master_id":"m","slave_id":"s","enabled":true,
+                "lot_mode":"Multiplier","lot_value":1.0,"reverse":false,
+                "max_slippage_pips":3}"#,
+        ).expect("rule fixture should deserialize from a minimal payload");
+        r.master_min_lot = min;
+        r.master_max_lot = max;
+        r
+    }
+
+    /// Mirrors the master-lot gate arm of `preflight`, which needs an
+    /// `AppState` we can't build in a unit test.
+    fn gate_passes(rule: &CopyRule, volume: f64) -> bool {
+        !(rule.master_min_lot > 0.0 && volume < rule.master_min_lot - LOT_EPS)
+            && !(rule.master_max_lot > 0.0 && volume > rule.master_max_lot + LOT_EPS)
+    }
+
+    #[test]
+    fn master_lot_gate_band_is_inclusive() {
+        // The issue's example: ignore anything below 0.03 or above 0.5.
+        let r = gate_rule(0.03, 0.5);
+        assert!(!gate_passes(&r, 0.01));
+        assert!(!gate_passes(&r, 0.02));
+        assert!(gate_passes(&r, 0.03), "the boundary lot itself must pass");
+        assert!(gate_passes(&r, 0.25));
+        assert!(gate_passes(&r, 0.5), "the boundary lot itself must pass");
+        assert!(!gate_passes(&r, 0.51));
+        assert!(!gate_passes(&r, 1.0));
+    }
+
+    #[test]
+    fn master_lot_gate_sides_are_independent() {
+        let lower_only = gate_rule(0.03, 0.0);
+        assert!(!gate_passes(&lower_only, 0.02));
+        assert!(gate_passes(&lower_only, 100.0));
+
+        let upper_only = gate_rule(0.0, 0.5);
+        assert!(gate_passes(&upper_only, 0.0001));
+        assert!(!gate_passes(&upper_only, 0.51));
+
+        let off = gate_rule(0.0, 0.0);
+        for v in [0.0001, 0.03, 999.0] { assert!(gate_passes(&off, v)); }
+    }
+
+    #[test]
+    fn new_rule_fields_default_to_off_for_legacy_configs() {
+        // Rules persisted before this feature carry none of these keys; they
+        // must deserialize as "filter disabled" rather than blocking copies.
+        let r = gate_rule(0.0, 0.0);
+        assert_eq!(r.master_min_lot, 0.0);
+        assert_eq!(r.master_max_lot, 0.0);
+        assert_eq!(r.magic_filter, "");
+        assert!(magic_allowed(&r.magic_filter, 4242));
+    }
 }

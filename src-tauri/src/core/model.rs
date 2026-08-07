@@ -95,9 +95,19 @@ pub struct CopyRule {
     pub max_slippage_pips: u32,
     #[serde(default)] pub symbol_map: HashMap<String, String>,
 
-    // Lot constraints
+    // Lot constraints — applied to the *computed slave volume*, i.e. they
+    // reshape the order rather than reject it. See `master_min_lot` /
+    // `master_max_lot` below for the gate that drops the signal instead.
     #[serde(default)] pub min_lot: f64,
     #[serde(default)] pub max_lot: f64,    // 0 = no cap
+
+    /// Master-lot gate. Unlike `min_lot`/`max_lot` (which clamp the slave's
+    /// volume), these inspect the **master's** lot size and drop the signal
+    /// entirely before it enters the copy engine. Lets a trader ignore a
+    /// strategy's scratch trades (< 0.03) or its outsized ones (> 0.5)
+    /// instead of silently resizing them. 0 = off on either side.
+    #[serde(default)] pub master_min_lot: f64,
+    #[serde(default)] pub master_max_lot: f64,
 
     // Symbol filters
     #[serde(default)] pub symbol_whitelist: Vec<String>,
@@ -114,6 +124,18 @@ pub struct CopyRule {
     // Behaviour filters
     #[serde(default)] pub direction: DirectionFilter,
     #[serde(default)] pub comment_filter: String,   // substring match, "" = off
+    /// EA magic-number filter — the reliable way to separate strategies when
+    /// several EAs trade the same master terminal (comments are often blank
+    /// or rewritten by the broker). Comma-separated list; "" = off. Entries:
+    ///   `123`       allow magic 123
+    ///   `100-199`   allow the inclusive range (EAs that derive magic per symbol)
+    ///   `!123`      block magic 123 (ranges may be negated too: `!100-199`)
+    /// A block match always wins. If at least one allow entry is present the
+    /// magic must match one of them; a filter made only of blocks lets
+    /// everything else through. Manual trades are magic 0. cTrader and
+    /// TradingView have no magic concept and always report 0 — an allow-list
+    /// on those masters matches nothing unless it includes `0`.
+    #[serde(default)] pub magic_filter: String,
     /// Mirror master closes / pending cancels onto the slave. Default true
     /// preserves the historical behaviour; flip to false to let the slave
     /// keep running its position once the master is out.
@@ -195,6 +217,10 @@ pub struct Trade {
     pub origin_ticket: Option<String>,
     #[serde(default)]
     pub comment: String,
+    /// EA magic number reported by the MT4/MT5 bridge. 0 for manual trades
+    /// and for connectors with no magic concept (cTrader, TradingView).
+    #[serde(default)]
+    pub magic: i64,
     /// Broker-reported pip size for the instrument at the time of the event.
     /// 0 when the EA hasn't been upgraded — the engine falls back to a
     /// symbol-name heuristic in that case.
@@ -226,6 +252,8 @@ pub struct PendingOrder {
     #[serde(default)] pub expiry: i64,
     #[serde(default)] pub origin_ticket: Option<String>,
     #[serde(default)] pub comment: String,
+    /// EA magic number — see `Trade::magic`.
+    #[serde(default)] pub magic: i64,
     #[serde(default)] pub pip_size: f64,
     #[serde(default)] pub feed: String,
 }

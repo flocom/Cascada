@@ -40,8 +40,14 @@ export interface CopyRule {
   max_slippage_pips: number;
   symbol_map: Record<string, string>;
 
+  /** Clamp applied to the computed slave volume (reshapes the order). */
   min_lot: number;
   max_lot: number;
+
+  /** Master-lot gate: drops the signal when the *master's* lot falls outside
+   *  the band, instead of resizing it like min_lot/max_lot. 0 = off. */
+  master_min_lot: number;
+  master_max_lot: number;
 
   symbol_whitelist: string[];
   symbol_blacklist: string[];
@@ -52,6 +58,9 @@ export interface CopyRule {
 
   direction: DirectionFilter;
   comment_filter: string;
+  /** EA magic-number filter. Comma-separated `123`, `100-199`, `!123`.
+   *  Empty = off. See `CopyRule::magic_filter` in the Rust model. */
+  magic_filter: string;
   close_on_master_close: boolean;
 
   max_open_positions: number;
@@ -133,11 +142,13 @@ export function defaultRule(master_id = "", slave_id = ""): CopyRule {
     max_slippage_pips: 3,
     symbol_map: {},
     min_lot: 0, max_lot: 0,
+    master_min_lot: 0, master_max_lot: 0,
     symbol_whitelist: [], symbol_blacklist: [],
     symbol_prefix: "", symbol_suffix: "",
     master_strip_prefix: "", master_strip_suffix: "",
     direction: "All",
     comment_filter: "",
+    magic_filter: "",
     close_on_master_close: true,
     max_open_positions: 0, max_exposure_lots: 0, max_daily_loss: 0,
     sl_mode: "Copy", sl_pips: 0,
@@ -162,6 +173,8 @@ export interface Trade {
   opened_at: number;
   closed_at: number | null;
   profit: number | null;
+  /** EA magic number (MT4/MT5). 0 for manual trades, cTrader and TradingView. */
+  magic?: number;
   /** Broker-reported pip size. 0/undefined on pre-v0.1.6 EAs. */
   pip_size?: number;
 }

@@ -105,6 +105,9 @@ pub enum S2C {
         #[serde(default)] pip_size: f64,
         #[serde(default)] label: String,
         #[serde(default)] comment: String,
+        /// EA magic number (MT4/MT5 bridge). Absent on cTrader/TradingView
+        /// and on pre-magic EA builds — defaults to 0 there.
+        #[serde(default)] magic: i64,
         /// TV data-feed marker (`OANDA:`, `*PEPPERSTONE`, …) preserved
         /// from the master-side raw symbol. Used by quote_offsets to
         /// match per-feed drift rules. Empty for non-TV connectors.
@@ -136,6 +139,8 @@ pub enum S2C {
         #[serde(default)] expiry: i64,
         #[serde(default)] origin: String,
         #[serde(default)] comment: String,
+        /// EA magic number — see `Open::magic`.
+        #[serde(default)] magic: i64,
         #[serde(default)] pip_size: f64,
         #[serde(default)] feed: String,
     },
@@ -187,14 +192,14 @@ pub fn dispatch(account: &Account, msg: S2C, events: &mpsc::UnboundedSender<Conn
         S2C::Heartbeat { balance, equity, .. } =>
             { let _ = events.send(ConnectorEvent::Heartbeat {
                 account_id: id.clone(), balance, equity }); },
-        S2C::Open { ticket, symbol, side, volume, price, sl, tp, ts, origin, comment, pip_size, feed, .. } =>
+        S2C::Open { ticket, symbol, side, volume, price, sl, tp, ts, origin, comment, magic, pip_size, feed, .. } =>
             { let _ = events.send(ConnectorEvent::TradeOpened(Trade {
                 ticket, account_id: id.clone(),
                 symbol, side, volume, price,
                 sl: opt(sl), tp: opt(tp),
                 opened_at: ts, closed_at: None, profit: None,
                 origin_ticket: (!origin.is_empty()).then_some(origin),
-                comment, pip_size, feed,
+                comment, magic, pip_size, feed,
             })); },
         S2C::Close { ticket, profit, ts, .. } =>
             { let _ = events.send(ConnectorEvent::TradeClosed {
@@ -206,11 +211,11 @@ pub fn dispatch(account: &Account, msg: S2C, events: &mpsc::UnboundedSender<Conn
                 symbol: String::new(), side: Side::Buy, volume: 0.0, price: 0.0,
                 sl: opt(sl), tp: opt(tp),
                 opened_at: 0, closed_at: None, profit: None,
-                origin_ticket: None, comment: String::new(), pip_size: 0.0,
+                origin_ticket: None, comment: String::new(), magic: 0, pip_size: 0.0,
                 feed: String::new(),
             })); },
         S2C::Pending { ticket, symbol, side, order_type, volume, target, sl, tp,
-                       expiry, origin, comment, pip_size, feed } => {
+                       expiry, origin, comment, magic, pip_size, feed } => {
             let kind = match order_type.as_str() {
                 "Limit"     => PendingType::Limit,
                 "StopLimit" => PendingType::StopLimit,
@@ -221,7 +226,7 @@ pub fn dispatch(account: &Account, msg: S2C, events: &mpsc::UnboundedSender<Conn
                 order_type: kind, volume, target,
                 sl: opt(sl), tp: opt(tp), expiry,
                 origin_ticket: (!origin.is_empty()).then_some(origin),
-                comment, pip_size, feed,
+                comment, magic, pip_size, feed,
             }));
         }
         S2C::PendingModify { ticket, target, sl, tp, expiry, .. } => {
@@ -233,7 +238,7 @@ pub fn dispatch(account: &Account, msg: S2C, events: &mpsc::UnboundedSender<Conn
                 symbol: String::new(), side: Side::Buy, order_type: PendingType::Limit,
                 volume: 0.0, target,
                 sl: opt(sl), tp: opt(tp), expiry,
-                origin_ticket: None, comment: String::new(), pip_size: 0.0,
+                origin_ticket: None, comment: String::new(), magic: 0, pip_size: 0.0,
                 feed: String::new(),
             }));
         }
@@ -255,7 +260,7 @@ pub fn dispatch(account: &Account, msg: S2C, events: &mpsc::UnboundedSender<Conn
                 sl: None, tp: None,
                 opened_at, closed_at: Some(closed_at), profit: Some(profit),
                 origin_ticket: (!origin.is_empty()).then_some(origin),
-                comment: String::new(), pip_size: 0.0,
+                comment: String::new(), magic: 0, pip_size: 0.0,
                 feed: String::new(),
             })); },
         S2C::HistoryDone { count } =>
